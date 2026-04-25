@@ -1,0 +1,17 @@
+.spectra/
+openspec/.vector-search.db*
+openspec/
+docs/
+CLAUDE.md
+.claude/
+.env
+credentials/
+*.pyc
+__pycache__/
+.pytest_cache/
+htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
+.DS_Store
