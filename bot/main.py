@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from dotenv import load_dotenv
 
 from bot.config import Config
 
@@ -23,6 +24,7 @@ class TheRollBarBot(commands.Bot):
 
 
 def main() -> None:
+    load_dotenv()
     config = Config.load()
     bot = TheRollBarBot(config)
     bot.run(config.discord_token)
