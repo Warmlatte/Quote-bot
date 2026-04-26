@@ -8,7 +8,7 @@ class Config:
     guild_id: int
     member_role_id: int
     google_sheets_id: str
-    google_credentials_path: str
+    google_service_account_json: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -17,7 +17,7 @@ class Config:
             "GUILD_ID",
             "MEMBER_ROLE_ID",
             "GOOGLE_SHEETS_ID",
-            "GOOGLE_CREDENTIALS_PATH",
+            "GOOGLE_SERVICE_ACCOUNT_JSON",
         ]
         for var in required:
             if not os.environ.get(var):
@@ -28,5 +28,5 @@ class Config:
             guild_id=int(os.environ["GUILD_ID"]),
             member_role_id=int(os.environ["MEMBER_ROLE_ID"]),
             google_sheets_id=os.environ["GOOGLE_SHEETS_ID"],
-            google_credentials_path=os.environ["GOOGLE_CREDENTIALS_PATH"],
+            google_service_account_json=os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"],
         )
