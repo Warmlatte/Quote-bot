@@ -40,3 +40,36 @@ def test_raises_when_env_var_missing(monkeypatch, missing_var):
 
     with pytest.raises(EnvironmentError, match=missing_var):
         Config.load()
+
+
+def test_db_path_defaults_when_not_set(monkeypatch):
+    for key, value in VALID_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("DB_PATH", raising=False)
+
+    config = Config.load()
+
+    assert config.db_path == "/data/quote_bot.db"
+
+
+def test_db_path_can_be_overridden(monkeypatch):
+    for key, value in VALID_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("DB_PATH", "./local.db")
+
+    config = Config.load()
+
+    assert config.db_path == "./local.db"
+
+
+def test_loads_base64_encoded_service_account(monkeypatch):
+    import base64
+    for key, value in VALID_ENV.items():
+        monkeypatch.setenv(key, value)
+    raw = VALID_ENV["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    encoded = base64.b64encode(raw.encode()).decode()
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", encoded)
+
+    config = Config.load()
+
+    assert config.google_service_account_json == raw

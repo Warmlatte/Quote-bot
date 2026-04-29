@@ -1,6 +1,9 @@
-from unittest.mock import MagicMock, AsyncMock, patch
+import tempfile
+from unittest.mock import MagicMock, AsyncMock, patch, call
 import discord
 import pytest
+
+from bot.db.client import DBClient
 
 
 # ---------------------------------------------------------------------------
@@ -148,3 +151,119 @@ class TestBuildQuoteEmbed:
         detail_fields = [f for f in embed.fields if "m" in f.value.lower() and ".stl" in f.value.lower()]
         shown_files = sum(f.value.count(".stl") for f in embed.fields)
         assert shown_files <= 10
+
+
+# ---------------------------------------------------------------------------
+# QuoteActionView._do_accept / _do_reject — DBClient integration
+# ---------------------------------------------------------------------------
+
+def _make_quote_result(auto_discount_amount=0, auto_free_ship=False):
+    qr = MagicMock()
+    qr.body_count = 3
+    qr.material_cost = 350
+    qr.processing_fee = 240
+    qr.auto_discount_amount = auto_discount_amount
+    qr.auto_free_ship = auto_free_ship
+    qr.subtotal = 590
+    qr.final_total = 560
+    qr.order_status = "正常"
+    return qr
+
+
+def _make_view_stub(db: DBClient):
+    """Return a MagicMock with the attributes QuoteActionView._do_* methods need."""
+    from bot.commands.quote import _ModalData
+    stub = MagicMock()
+    stub._db = db
+    stub._modal_data = _ModalData(
+        customer_name="測試客戶",
+        drive_folder_url="https://drive.google.com/drive/folders/abc",
+        quote_number="Q-001",
+        folder_id="abc",
+    )
+    stub._quote_result = _make_quote_result()
+    stub._resin_label = "RPG高精度樹脂"
+    stub._file_details = []
+    stub._error_files = []
+    stub._final_total = 560
+    stub._final_free_shipping = False
+    stub._manual_nine_ten = False
+    stub._manual_free_ship = False
+    stub._config = MagicMock()
+    stub._config.google_service_account_json = '{"type": "service_account"}'
+    return stub
+
+
+class TestDoAccept:
+    def test_writes_to_db_not_sheets(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        with (
+            patch("bot.commands.quote.generate_quote_pdf"),
+            patch("bot.commands.quote.DriveClient") as mock_drive_cls,
+        ):
+            mock_drive = MagicMock()
+            mock_drive.upload_file.return_value = "https://drive.google.com/file/pdf"
+            mock_drive_cls.return_value = mock_drive
+
+            QuoteActionView._do_accept(stub)
+
+        quote_records = db.get_unsynced_quote_records()
+        customer_records = db.get_unsynced_customer_records()
+        assert len(quote_records) == 1
+        assert len(customer_records) == 1
+        assert quote_records[0]["decision"] == "接受"
+        assert customer_records[0]["pdf_url"] == "https://drive.google.com/file/pdf"
+
+    def test_does_not_call_sheets_client(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        with (
+            patch("bot.commands.quote.generate_quote_pdf"),
+            patch("bot.commands.quote.DriveClient") as mock_drive_cls,
+            patch("bot.commands.quote.SheetsClient") as mock_sheets_cls,
+        ):
+            mock_drive = MagicMock()
+            mock_drive.upload_file.return_value = "https://drive.google.com/file/pdf"
+            mock_drive_cls.return_value = mock_drive
+
+            QuoteActionView._do_accept(stub)
+
+        mock_sheets_cls.assert_not_called()
+
+
+class TestDoReject:
+    def test_writes_quote_record_to_db(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        QuoteActionView._do_reject(stub)
+
+        quote_records = db.get_unsynced_quote_records()
+        assert len(quote_records) == 1
+        assert quote_records[0]["decision"] == "拒絕"
+
+    def test_does_not_write_customer_record(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        QuoteActionView._do_reject(stub)
+
+        customer_records = db.get_unsynced_customer_records()
+        assert len(customer_records) == 0
+
+    def test_does_not_call_sheets_client(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        with patch("bot.commands.quote.SheetsClient") as mock_sheets_cls:
+            QuoteActionView._do_reject(stub)
+
+        mock_sheets_cls.assert_not_called()

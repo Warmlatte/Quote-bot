@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Config
+from bot.db.client import DBClient
 from bot.drive.client import DriveClient, extract_folder_id
 from bot.pdf_gen.generator import generate_quote_pdf
 from bot.pricing.engine import ResinType, apply_manual_discounts, calculate_quote
@@ -260,6 +261,7 @@ class QuoteActionView(discord.ui.View):
         error_files: list[str],
         resin_label: str,
         config: Config,
+        db: DBClient,
     ) -> None:
         super().__init__(timeout=600)
         self._modal_data = modal_data
@@ -268,6 +270,7 @@ class QuoteActionView(discord.ui.View):
         self._error_files = error_files
         self._resin_label = resin_label
         self._config = config
+        self._db = db
         self._final_total = quote_result.final_total
         self._final_free_shipping = quote_result.auto_free_ship
         self._manual_nine_ten = False
@@ -343,22 +346,21 @@ class QuoteActionView(discord.ui.View):
             drive = DriveClient(cfg.google_service_account_json)
             pdf_url = drive.upload_file(pdf_path, md.folder_id)
 
-        sheets = SheetsClient(cfg.google_service_account_json, cfg.google_sheets_id)
-        sheets.append_customer_record(
+        self._db.insert_customer_record(
             quote_number=md.quote_number,
             customer_name=md.customer_name,
             drive_folder_url=md.drive_folder_url,
             final_total=self._final_total,
             pdf_url=pdf_url,
         )
-        sheets.append_quote_record(
+        self._db.insert_quote_record(
             quote_number=md.quote_number,
             customer_name=md.customer_name,
             resin_label=self._resin_label,
             body_count=qr.body_count,
             material_cost=qr.material_cost,
             processing_fee=qr.processing_fee,
-            auto_discount=qr.auto_discount_amount > 0,
+            auto_discount="95折" if qr.auto_discount_amount > 0 else "無",
             manual_discount=manual_discount_str,
             subtotal=qr.subtotal,
             final_total=self._final_total,
@@ -378,15 +380,14 @@ class QuoteActionView(discord.ui.View):
             parts.append("免運費")
         manual_discount_str = " + ".join(parts) if parts else "無"
 
-        sheets = SheetsClient(cfg.google_service_account_json, cfg.google_sheets_id)
-        sheets.append_quote_record(
+        self._db.insert_quote_record(
             quote_number=md.quote_number,
             customer_name=md.customer_name,
             resin_label=self._resin_label,
             body_count=qr.body_count,
             material_cost=qr.material_cost,
             processing_fee=qr.processing_fee,
-            auto_discount=qr.auto_discount_amount > 0,
+            auto_discount="95折" if qr.auto_discount_amount > 0 else "無",
             manual_discount=manual_discount_str,
             subtotal=qr.subtotal,
             final_total=self._final_total,
@@ -403,6 +404,7 @@ class QuoteCog(commands.Cog):
     def __init__(self, bot: commands.Bot, config: Config) -> None:
         self.bot = bot
         self.config = config
+        self._db = DBClient(config.db_path)
 
     @app_commands.command(name="quote", description="建立 3D 列印估價單")
     async def quote(self, interaction: discord.Interaction) -> None:
@@ -463,6 +465,7 @@ class QuoteCog(commands.Cog):
             error_files=error_files,
             resin_label=resin_label,
             config=self.config,
+            db=self._db,
         )
         await interaction.edit_original_response(content=None, embed=embed, view=view)
 
