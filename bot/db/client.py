@@ -10,7 +10,13 @@ def _utc_now() -> str:
 
 class DBClient:
     def __init__(self, db_path: str) -> None:
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise EnvironmentError(
+                f"Cannot create database directory '{Path(db_path).parent}': {exc}. "
+                "Set DB_PATH to a writable path (e.g. DB_PATH=./quote_bot.db)."
+            ) from exc
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._create_tables()
