@@ -423,13 +423,15 @@ class QuoteActionView(discord.ui.View):
         md = self._modal_data
         qr = self._quote_result
         manual_discount_str = self._manual_discount_str()
-        self._db.insert_customer_record(
+        inserted = self._db.insert_customer_record(
             quote_number=md.quote_number,
             customer_name=md.customer_name,
             drive_folder_url=md.drive_folder_url,
             final_total=self._final_total,
             pdf_url=pdf_url,
         )
+        if not inserted:
+            raise ValueError(f"此雲端連結已有接受記錄，無法重複提交：{md.drive_folder_url}")
         self._db.insert_quote_record(
             quote_number=md.quote_number,
             customer_name=md.customer_name,

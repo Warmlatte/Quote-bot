@@ -1,9 +1,12 @@
 import os
+import re
 import tempfile
 
 import pytest
 
 from bot.db.client import DBClient
+
+_UTC8_PATTERN = re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}$")
 
 
 @pytest.fixture
@@ -242,6 +245,40 @@ def test_get_unsynced_rejected_quotes_excludes_synced(db, sample_quote_record):
     db.mark_quote_record_synced(records[0]["id"])
 
     assert len(db.get_unsynced_rejected_quotes()) == 0
+
+
+# --- time format ---
+
+def test_created_at_is_utc8_format(db, sample_quote_record):
+    db.insert_quote_record(**sample_quote_record)
+    r = db.get_unsynced_quote_records()[0]
+    assert _UTC8_PATTERN.match(r["created_at"]), f"Expected YYYY/MM/DD HH:mm, got {r['created_at']!r}"
+
+
+def test_customer_record_created_at_is_utc8_format(db, sample_customer_record):
+    db.insert_customer_record(**sample_customer_record)
+    r = db.get_unsynced_customer_records()[0]
+    assert _UTC8_PATTERN.match(r["created_at"]), f"Expected YYYY/MM/DD HH:mm, got {r['created_at']!r}"
+
+
+# --- drive_folder_url uniqueness ---
+
+def test_insert_customer_record_returns_true_on_first_insert(db, sample_customer_record):
+    result = db.insert_customer_record(**sample_customer_record)
+    assert result is True
+
+
+def test_insert_customer_record_returns_false_on_duplicate_url(db, sample_customer_record):
+    db.insert_customer_record(**sample_customer_record)
+    result = db.insert_customer_record(**{**sample_customer_record, "quote_number": "Q-DUPE"})
+    assert result is False
+
+
+def test_duplicate_drive_url_does_not_create_second_record(db, sample_customer_record):
+    db.insert_customer_record(**sample_customer_record)
+    db.insert_customer_record(**{**sample_customer_record, "quote_number": "Q-DUPE"})
+    records = db.get_unsynced_customer_records()
+    assert len(records) == 1
 
 
 # --- migration idempotency ---

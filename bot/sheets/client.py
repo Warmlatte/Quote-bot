@@ -18,6 +18,7 @@ class SheetsClient:
 
     def append_accepted_quote(
         self,
+        record_id: int,
         created_at: str,
         quote_number: str,
         customer_name: str,
@@ -25,7 +26,7 @@ class SheetsClient:
         final_total: int,
     ) -> None:
         row = [
-            "",                              # 0  編號（由試算表公式填入）
+            record_id,                       # 0  編號
             created_at,                      # 1  時間戳
             quote_number,                    # 2  估價單編號
             customer_name,                   # 3  客戶名稱
@@ -33,10 +34,11 @@ class SheetsClient:
             final_total,                     # 5  最終總價
         ]
         ws = self._spreadsheet.worksheet("報價紀錄")
-        ws.append_row(row)
+        ws.insert_row(row, 2)
 
     def append_rejected_quote(
         self,
+        record_id: int,
         created_at: str,
         customer_name: str,
         final_total: int,
@@ -44,7 +46,7 @@ class SheetsClient:
         rejection_reason: str,
     ) -> None:
         row = [
-            "",                 # 0  編號（由試算表公式填入）
+            record_id,          # 0  編號
             created_at,         # 1  時間戳
             customer_name,      # 2  客戶名稱
             final_total,        # 3  最終總價
@@ -52,4 +54,4 @@ class SheetsClient:
             rejection_reason,   # 5  拒絕理由
         ]
         ws = self._spreadsheet.worksheet("客戶管理")
-        ws.append_row(row)
+        ws.insert_row(row, 2)

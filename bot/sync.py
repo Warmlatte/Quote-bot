@@ -25,6 +25,7 @@ def sync_records(db: DBClient, sheets: SheetsClient) -> SyncResult:
     for record in db.get_unsynced_accepted_quotes():
         try:
             sheets.append_accepted_quote(
+                record_id=record["id"],
                 created_at=record["created_at"],
                 quote_number=record["quote_number"],
                 customer_name=record["customer_name"],
@@ -40,6 +41,7 @@ def sync_records(db: DBClient, sheets: SheetsClient) -> SyncResult:
     for record in db.get_unsynced_rejected_quotes():
         try:
             sheets.append_rejected_quote(
+                record_id=record["id"],
                 created_at=record["created_at"],
                 customer_name=record["customer_name"],
                 final_total=record["final_total"],

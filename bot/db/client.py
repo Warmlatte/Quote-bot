@@ -1,11 +1,13 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+_TZ_TAIPEI = timezone(timedelta(hours=8))
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def _now_taipei() -> str:
+    return datetime.now(_TZ_TAIPEI).strftime("%Y/%m/%d %H:%M")
 
 
 class DBClient:
@@ -99,7 +101,7 @@ class DBClient:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                _utc_now(), quote_number, customer_name, resin_label, body_count,
+                _now_taipei(), quote_number, customer_name, resin_label, body_count,
                 material_cost, processing_fee, auto_discount, manual_discount,
                 subtotal, final_total, order_status, decision,
                 drive_folder_url, file_details_text, rejection_reason,
@@ -114,16 +116,24 @@ class DBClient:
         drive_folder_url: str,
         final_total: int,
         pdf_url: str,
-    ) -> None:
+    ) -> bool:
+        """Returns True if inserted; False if drive_folder_url already exists."""
+        existing = self._conn.execute(
+            "SELECT id FROM customer_records WHERE drive_folder_url = ?",
+            (drive_folder_url,),
+        ).fetchone()
+        if existing:
+            return False
         self._conn.execute(
             """
             INSERT INTO customer_records
                 (created_at, quote_number, customer_name, drive_folder_url, final_total, pdf_url)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (_utc_now(), quote_number, customer_name, drive_folder_url, final_total, pdf_url),
+            (_now_taipei(), quote_number, customer_name, drive_folder_url, final_total, pdf_url),
         )
         self._conn.commit()
+        return True
 
     def get_unsynced_quote_records(self) -> list[dict[str, Any]]:
         cursor = self._conn.execute(
@@ -152,13 +162,13 @@ class DBClient:
     def mark_quote_record_synced(self, record_id: int) -> None:
         self._conn.execute(
             "UPDATE quote_records SET synced_at = ? WHERE id = ?",
-            (_utc_now(), record_id),
+            (_now_taipei(), record_id),
         )
         self._conn.commit()
 
     def mark_customer_record_synced(self, record_id: int) -> None:
         self._conn.execute(
             "UPDATE customer_records SET synced_at = ? WHERE id = ?",
-            (_utc_now(), record_id),
+            (_now_taipei(), record_id),
         )
         self._conn.commit()
