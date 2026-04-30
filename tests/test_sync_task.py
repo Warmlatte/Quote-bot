@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, call
 import pytest
 
 from bot.db.client import DBClient
-from bot.main import _sync_records
+from bot.sync import SyncResult, sync_records as _sync_records
 
 
 @pytest.fixture
@@ -124,3 +124,57 @@ def test_customer_record_exception_does_not_crash_sync(db, sheets):
     sheets.append_customer_record.side_effect = Exception("API error")
 
     _sync_records(db, sheets)  # should not raise
+
+
+# --- SyncResult return value ---
+
+def test_returns_sync_result_type(db, sheets):
+    result = _sync_records(db, sheets)
+    assert isinstance(result, SyncResult)
+
+
+def test_result_counts_synced_quotes(db, sheets):
+    _insert_quote(db, "Q-001")
+    _insert_quote(db, "Q-002")
+
+    result = _sync_records(db, sheets)
+
+    assert result.synced_quotes == 2
+    assert result.failed_quotes == 0
+
+
+def test_result_counts_failed_quotes(db, sheets):
+    _insert_quote(db, "Q-001")
+    sheets.append_quote_record.side_effect = Exception("API error")
+
+    result = _sync_records(db, sheets)
+
+    assert result.synced_quotes == 0
+    assert result.failed_quotes == 1
+
+
+def test_result_counts_synced_customers(db, sheets):
+    _insert_customer(db, "Q-001")
+
+    result = _sync_records(db, sheets)
+
+    assert result.synced_customers == 1
+    assert result.failed_customers == 0
+
+
+def test_result_counts_failed_customers(db, sheets):
+    _insert_customer(db)
+    sheets.append_customer_record.side_effect = Exception("API error")
+
+    result = _sync_records(db, sheets)
+
+    assert result.synced_customers == 0
+    assert result.failed_customers == 1
+
+
+def test_result_zero_when_nothing_to_sync(db, sheets):
+    result = _sync_records(db, sheets)
+
+    assert result == SyncResult(
+        synced_quotes=0, synced_customers=0, failed_quotes=0, failed_customers=0
+    )

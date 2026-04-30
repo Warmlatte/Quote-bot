@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from bot.config import Config
 from bot.db.client import DBClient
 from bot.sheets.client import SheetsClient
+from bot.sync import sync_records
 
 logger = logging.getLogger(__name__)
 
@@ -20,39 +21,8 @@ aiohttp.connector._SSL_CONTEXT_VERIFIED = ssl.create_default_context(
 )
 
 
-def _sync_records(db: DBClient, sheets: SheetsClient) -> None:
-    for record in db.get_unsynced_quote_records():
-        try:
-            sheets.append_quote_record(
-                quote_number=record["quote_number"],
-                customer_name=record["customer_name"],
-                resin_label=record["resin_label"],
-                body_count=record["body_count"],
-                material_cost=record["material_cost"],
-                processing_fee=record["processing_fee"],
-                auto_discount=record["auto_discount"] == "95折",
-                manual_discount=record["manual_discount"],
-                subtotal=record["subtotal"],
-                final_total=record["final_total"],
-                order_status=record["order_status"],
-                decision=record["decision"],
-            )
-            db.mark_quote_record_synced(record["id"])
-        except Exception:
-            logger.exception("Failed to sync quote record id=%s", record["id"])
-
-    for record in db.get_unsynced_customer_records():
-        try:
-            sheets.append_customer_record(
-                quote_number=record["quote_number"],
-                customer_name=record["customer_name"],
-                drive_folder_url=record["drive_folder_url"],
-                final_total=record["final_total"],
-                pdf_url=record["pdf_url"],
-            )
-            db.mark_customer_record_synced(record["id"])
-        except Exception:
-            logger.exception("Failed to sync customer record id=%s", record["id"])
+# Keep the old name as an alias so existing tests importing _sync_records still work.
+_sync_records = sync_records
 
 
 class TheRollBarBot(commands.Bot):
@@ -63,9 +33,11 @@ class TheRollBarBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
+        from bot.commands.admin import AdminCog
         from bot.commands.quote import QuoteCog
 
         await self.add_cog(QuoteCog(self, self.config))
+        await self.add_cog(AdminCog(self, self.config))
         guild = discord.Object(id=self.config.guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
@@ -81,8 +53,14 @@ class TheRollBarBot(commands.Bot):
             self.config.google_service_account_json,
             self.config.google_sheets_id,
         )
-        _sync_records(self._db, sheets)
-        logger.info("Daily Sheets sync complete")
+        result = sync_records(self._db, sheets)
+        logger.info(
+            "Daily Sheets sync complete: quotes=%d/%d customers=%d/%d",
+            result.synced_quotes,
+            result.synced_quotes + result.failed_quotes,
+            result.synced_customers,
+            result.synced_customers + result.failed_customers,
+        )
 
     @_daily_sync.before_loop
     async def _before_daily_sync(self) -> None:
