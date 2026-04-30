@@ -20,6 +20,7 @@ class DBClient:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._create_tables()
+        self._migrate_tables()
 
     def _create_tables(self) -> None:
         self._conn.executescript("""
@@ -38,7 +39,10 @@ class DBClient:
                 final_total      INTEGER NOT NULL,
                 order_status     TEXT    NOT NULL,
                 decision         TEXT    NOT NULL,
-                synced_at        TEXT    DEFAULT NULL
+                synced_at        TEXT    DEFAULT NULL,
+                drive_folder_url TEXT    DEFAULT NULL,
+                file_details_text TEXT   DEFAULT NULL,
+                rejection_reason TEXT    DEFAULT NULL
             );
 
             CREATE TABLE IF NOT EXISTS customer_records (
@@ -52,6 +56,19 @@ class DBClient:
                 synced_at         TEXT    DEFAULT NULL
             );
         """)
+        self._conn.commit()
+
+    def _migrate_tables(self) -> None:
+        new_columns = [
+            "ALTER TABLE quote_records ADD COLUMN drive_folder_url TEXT DEFAULT NULL",
+            "ALTER TABLE quote_records ADD COLUMN file_details_text TEXT DEFAULT NULL",
+            "ALTER TABLE quote_records ADD COLUMN rejection_reason TEXT DEFAULT NULL",
+        ]
+        for stmt in new_columns:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     def insert_quote_record(
@@ -68,19 +85,24 @@ class DBClient:
         final_total: int,
         order_status: str,
         decision: str,
+        drive_folder_url: str | None = None,
+        file_details_text: str | None = None,
+        rejection_reason: str | None = None,
     ) -> None:
         self._conn.execute(
             """
             INSERT INTO quote_records
                 (created_at, quote_number, customer_name, resin_label, body_count,
                  material_cost, processing_fee, auto_discount, manual_discount,
-                 subtotal, final_total, order_status, decision)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 subtotal, final_total, order_status, decision,
+                 drive_folder_url, file_details_text, rejection_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _utc_now(), quote_number, customer_name, resin_label, body_count,
                 material_cost, processing_fee, auto_discount, manual_discount,
                 subtotal, final_total, order_status, decision,
+                drive_folder_url, file_details_text, rejection_reason,
             ),
         )
         self._conn.commit()
@@ -106,6 +128,18 @@ class DBClient:
     def get_unsynced_quote_records(self) -> list[dict[str, Any]]:
         cursor = self._conn.execute(
             "SELECT * FROM quote_records WHERE synced_at IS NULL ORDER BY id"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_unsynced_accepted_quotes(self) -> list[dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM quote_records WHERE synced_at IS NULL AND decision = '接受' ORDER BY id"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_unsynced_rejected_quotes(self) -> list[dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM quote_records WHERE synced_at IS NULL AND decision = '拒絕' ORDER BY id"
         )
         return [dict(row) for row in cursor.fetchall()]
 

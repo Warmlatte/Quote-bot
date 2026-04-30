@@ -28,7 +28,12 @@ class DriveClient:
         query = f"'{folder_id}' in parents and trashed = false"
         response = (
             self._service.files()
-            .list(q=query, fields="files(id, name)")
+            .list(
+                q=query,
+                fields="files(id, name)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
             .execute()
         )
         return [
@@ -37,7 +42,9 @@ class DriveClient:
         ]
 
     def download_file(self, file_id: str, dest_path: str) -> str:
-        request = self._service.files().get_media(fileId=file_id)
+        request = self._service.files().get_media(
+            fileId=file_id, supportsAllDrives=True
+        )
         with open(dest_path, "wb") as fh:
             downloader = MediaIoBaseDownload(fh, request)
             done = False
@@ -56,12 +63,18 @@ class DriveClient:
         metadata = {"name": file_name, "parents": [folder_id]}
         file_obj = (
             self._service.files()
-            .create(body=metadata, media_body=media, fields="id,webViewLink")
+            .create(
+                body=metadata,
+                media_body=media,
+                fields="id,webViewLink",
+                supportsAllDrives=True,
+            )
             .execute()
         )
         file_id = file_obj["id"]
         self._service.permissions().create(
             fileId=file_id,
             body={"type": "anyone", "role": "reader"},
+            supportsAllDrives=True,
         ).execute()
         return file_obj["webViewLink"]

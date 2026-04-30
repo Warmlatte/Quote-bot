@@ -170,3 +170,87 @@ def test_partial_sync_leaves_unsynced_rows(db, sample_quote_record):
 
     unsynced = db.get_unsynced_quote_records()
     assert len(unsynced) == 2
+
+
+# --- new optional columns ---
+
+def test_insert_quote_record_with_drive_folder_url(db, sample_quote_record):
+    db.insert_quote_record(**sample_quote_record, drive_folder_url="https://drive.google.com/drive/folders/xyz")
+    records = db.get_unsynced_quote_records()
+    assert records[0]["drive_folder_url"] == "https://drive.google.com/drive/folders/xyz"
+
+
+def test_insert_quote_record_without_drive_folder_url_is_null(db, sample_quote_record):
+    db.insert_quote_record(**sample_quote_record)
+    records = db.get_unsynced_quote_records()
+    assert records[0]["drive_folder_url"] is None
+
+
+def test_insert_quote_record_with_file_details_and_rejection_reason(db, sample_quote_record):
+    db.insert_quote_record(
+        **{**sample_quote_record, "decision": "拒絕"},
+        file_details_text="model.stl: 3.50ml / 5件",
+        rejection_reason="價格太高",
+    )
+    records = db.get_unsynced_quote_records()
+    r = records[0]
+    assert r["file_details_text"] == "model.stl: 3.50ml / 5件"
+    assert r["rejection_reason"] == "價格太高"
+
+
+def test_insert_quote_record_rejected_without_optional_fields_is_null(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "decision": "拒絕"})
+    records = db.get_unsynced_quote_records()
+    r = records[0]
+    assert r["file_details_text"] is None
+    assert r["rejection_reason"] is None
+
+
+# --- get_unsynced_accepted_quotes / get_unsynced_rejected_quotes ---
+
+def test_get_unsynced_accepted_quotes_returns_only_accepted(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "decision": "接受", "quote_number": "Q-A"})
+    db.insert_quote_record(**{**sample_quote_record, "decision": "拒絕", "quote_number": "Q-R"})
+
+    accepted = db.get_unsynced_accepted_quotes()
+    assert len(accepted) == 1
+    assert accepted[0]["decision"] == "接受"
+    assert accepted[0]["quote_number"] == "Q-A"
+
+
+def test_get_unsynced_rejected_quotes_returns_only_rejected(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "decision": "接受", "quote_number": "Q-A"})
+    db.insert_quote_record(**{**sample_quote_record, "decision": "拒絕", "quote_number": "Q-R"})
+
+    rejected = db.get_unsynced_rejected_quotes()
+    assert len(rejected) == 1
+    assert rejected[0]["decision"] == "拒絕"
+    assert rejected[0]["quote_number"] == "Q-R"
+
+
+def test_get_unsynced_accepted_quotes_excludes_synced(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "decision": "接受"})
+    records = db.get_unsynced_accepted_quotes()
+    db.mark_quote_record_synced(records[0]["id"])
+
+    assert len(db.get_unsynced_accepted_quotes()) == 0
+
+
+def test_get_unsynced_rejected_quotes_excludes_synced(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "decision": "拒絕"})
+    records = db.get_unsynced_rejected_quotes()
+    db.mark_quote_record_synced(records[0]["id"])
+
+    assert len(db.get_unsynced_rejected_quotes()) == 0
+
+
+# --- migration idempotency ---
+
+def test_migration_is_idempotent(tmp_path, sample_quote_record):
+    path = str(tmp_path / "migrate.db")
+    db1 = DBClient(path)
+    db1.insert_quote_record(**sample_quote_record)
+
+    db2 = DBClient(path)  # second init on same DB should not raise
+    records = db2.get_unsynced_quote_records()
+    assert len(records) == 1

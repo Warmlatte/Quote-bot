@@ -189,6 +189,7 @@ def _make_view_stub(db: DBClient):
     stub._final_free_shipping = False
     stub._manual_nine_ten = False
     stub._manual_free_ship = False
+    stub._manual_discount_str = MagicMock(return_value="無")
     stub._config = MagicMock()
     stub._config.google_service_account_json = '{"type": "service_account"}'
     return stub
@@ -200,38 +201,32 @@ class TestDoAccept:
         db = DBClient(str(tmp_path / "test.db"))
         stub = _make_view_stub(db)
 
-        with (
-            patch("bot.commands.quote.generate_quote_pdf"),
-            patch("bot.commands.quote.DriveClient") as mock_drive_cls,
-        ):
-            mock_drive = MagicMock()
-            mock_drive.upload_file.return_value = "https://drive.google.com/file/pdf"
-            mock_drive_cls.return_value = mock_drive
-
-            QuoteActionView._do_accept(stub)
+        QuoteActionView._record_acceptance(stub, "Discord 附件")
 
         quote_records = db.get_unsynced_quote_records()
         customer_records = db.get_unsynced_customer_records()
         assert len(quote_records) == 1
         assert len(customer_records) == 1
         assert quote_records[0]["decision"] == "接受"
-        assert customer_records[0]["pdf_url"] == "https://drive.google.com/file/pdf"
+        assert customer_records[0]["pdf_url"] == "Discord 附件"
+
+    def test_writes_drive_folder_url_to_quote_record(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        QuoteActionView._record_acceptance(stub, "Discord 附件")
+
+        quote_records = db.get_unsynced_quote_records()
+        assert quote_records[0]["drive_folder_url"] == "https://drive.google.com/drive/folders/abc"
 
     def test_does_not_call_sheets_client(self, tmp_path):
         from bot.commands.quote import QuoteActionView
         db = DBClient(str(tmp_path / "test.db"))
         stub = _make_view_stub(db)
 
-        with (
-            patch("bot.commands.quote.generate_quote_pdf"),
-            patch("bot.commands.quote.DriveClient") as mock_drive_cls,
-            patch("bot.commands.quote.SheetsClient") as mock_sheets_cls,
-        ):
-            mock_drive = MagicMock()
-            mock_drive.upload_file.return_value = "https://drive.google.com/file/pdf"
-            mock_drive_cls.return_value = mock_drive
-
-            QuoteActionView._do_accept(stub)
+        with patch("bot.commands.quote.SheetsClient") as mock_sheets_cls:
+            QuoteActionView._record_acceptance(stub, "Discord 附件")
 
         mock_sheets_cls.assert_not_called()
 
@@ -247,6 +242,37 @@ class TestDoReject:
         quote_records = db.get_unsynced_quote_records()
         assert len(quote_records) == 1
         assert quote_records[0]["decision"] == "拒絕"
+
+    def test_writes_rejection_reason_to_db(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        QuoteActionView._do_reject(stub, "價格太高")
+
+        quote_records = db.get_unsynced_quote_records()
+        assert quote_records[0]["rejection_reason"] == "價格太高"
+
+    def test_writes_file_details_text_to_db(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+        stub._file_details = [{"filename": "model.stl", "volume_ml": 3.5, "body_count": 5}]
+
+        QuoteActionView._do_reject(stub)
+
+        quote_records = db.get_unsynced_quote_records()
+        assert quote_records[0]["file_details_text"] == "model.stl: 3.50ml / 5件"
+
+    def test_empty_rejection_reason_stored_as_empty_string(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        QuoteActionView._do_reject(stub, "")
+
+        quote_records = db.get_unsynced_quote_records()
+        assert quote_records[0]["rejection_reason"] == ""
 
     def test_does_not_write_customer_record(self, tmp_path):
         from bot.commands.quote import QuoteActionView
@@ -267,3 +293,27 @@ class TestDoReject:
             QuoteActionView._do_reject(stub)
 
         mock_sheets_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _format_file_details
+# ---------------------------------------------------------------------------
+
+class TestFormatFileDetails:
+    def test_single_file(self):
+        from bot.commands.quote import _format_file_details
+        result = _format_file_details([{"filename": "model.stl", "volume_ml": 3.5, "body_count": 5}])
+        assert result == "model.stl: 3.50ml / 5件"
+
+    def test_multiple_files(self):
+        from bot.commands.quote import _format_file_details
+        details = [
+            {"filename": "a.stl", "volume_ml": 2.0, "body_count": 3},
+            {"filename": "b.obj", "volume_ml": 1.5, "body_count": 2},
+        ]
+        result = _format_file_details(details)
+        assert result == "a.stl: 2.00ml / 3件\nb.obj: 1.50ml / 2件"
+
+    def test_empty_list(self):
+        from bot.commands.quote import _format_file_details
+        assert _format_file_details([]) == ""

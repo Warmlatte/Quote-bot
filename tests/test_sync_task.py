@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,7 +16,7 @@ def sheets():
     return MagicMock()
 
 
-def _insert_quote(db, quote_number="Q-001", decision="接受"):
+def _insert_accepted(db, quote_number="Q-001", drive_folder_url=None):
     db.insert_quote_record(
         quote_number=quote_number,
         customer_name="測試客戶",
@@ -29,7 +29,27 @@ def _insert_quote(db, quote_number="Q-001", decision="接受"):
         subtotal=590,
         final_total=560,
         order_status="正常",
-        decision=decision,
+        decision="接受",
+        drive_folder_url=drive_folder_url,
+    )
+
+
+def _insert_rejected(db, quote_number="Q-001", file_details_text="", rejection_reason=""):
+    db.insert_quote_record(
+        quote_number=quote_number,
+        customer_name="測試客戶",
+        resin_label="RPG高精度樹脂",
+        body_count=3,
+        material_cost=350,
+        processing_fee=240,
+        auto_discount="95折",
+        manual_discount="無",
+        subtotal=590,
+        final_total=560,
+        order_status="正常",
+        decision="拒絕",
+        file_details_text=file_details_text,
+        rejection_reason=rejection_reason,
     )
 
 
@@ -48,59 +68,118 @@ def _insert_customer(db, quote_number="Q-001"):
 def test_no_sheets_calls_when_no_pending_records(db, sheets):
     _sync_records(db, sheets)
 
-    sheets.append_quote_record.assert_not_called()
-    sheets.append_customer_record.assert_not_called()
+    sheets.append_accepted_quote.assert_not_called()
+    sheets.append_rejected_quote.assert_not_called()
 
 
-# --- Batch write quote records ---
+# --- Accepted quotes routed to append_accepted_quote ---
 
-def test_syncs_n_quote_records(db, sheets):
-    _insert_quote(db, "Q-001")
-    _insert_quote(db, "Q-002")
-
-    _sync_records(db, sheets)
-
-    assert sheets.append_quote_record.call_count == 2
-
-
-def test_marks_quote_records_synced_after_write(db, sheets):
-    _insert_quote(db, "Q-001")
+def test_syncs_accepted_quotes_via_append_accepted_quote(db, sheets):
+    _insert_accepted(db, "Q-001")
+    _insert_accepted(db, "Q-002")
 
     _sync_records(db, sheets)
 
-    assert len(db.get_unsynced_quote_records()) == 0
+    assert sheets.append_accepted_quote.call_count == 2
+    sheets.append_rejected_quote.assert_not_called()
 
 
-def test_syncs_customer_records(db, sheets):
+def test_append_accepted_quote_called_with_correct_fields(db, sheets):
+    _insert_accepted(db, "Q-001", drive_folder_url="https://drive.google.com/drive/folders/xyz")
+
+    _sync_records(db, sheets)
+
+    kwargs = sheets.append_accepted_quote.call_args[1]
+    assert kwargs["quote_number"] == "Q-001"
+    assert kwargs["customer_name"] == "測試客戶"
+    assert kwargs["drive_folder_url"] == "https://drive.google.com/drive/folders/xyz"
+    assert kwargs["final_total"] == 560
+
+
+def test_marks_accepted_records_synced_after_write(db, sheets):
+    _insert_accepted(db, "Q-001")
+
+    _sync_records(db, sheets)
+
+    assert len(db.get_unsynced_accepted_quotes()) == 0
+
+
+# --- Rejected quotes routed to append_rejected_quote ---
+
+def test_syncs_rejected_quotes_via_append_rejected_quote(db, sheets):
+    _insert_rejected(db, "Q-001", file_details_text="a.stl: 2.00ml / 3件", rejection_reason="貴")
+    _insert_rejected(db, "Q-002")
+
+    _sync_records(db, sheets)
+
+    assert sheets.append_rejected_quote.call_count == 2
+    sheets.append_accepted_quote.assert_not_called()
+
+
+def test_append_rejected_quote_called_with_correct_fields(db, sheets):
+    _insert_rejected(db, "Q-001", file_details_text="m.stl: 3.50ml / 5件", rejection_reason="嫌貴")
+
+    _sync_records(db, sheets)
+
+    kwargs = sheets.append_rejected_quote.call_args[1]
+    assert kwargs["customer_name"] == "測試客戶"
+    assert kwargs["file_details_text"] == "m.stl: 3.50ml / 5件"
+    assert kwargs["rejection_reason"] == "嫌貴"
+    assert kwargs["final_total"] == 560
+
+
+def test_marks_rejected_records_synced_after_write(db, sheets):
+    _insert_rejected(db)
+
+    _sync_records(db, sheets)
+
+    assert len(db.get_unsynced_rejected_quotes()) == 0
+
+
+# --- customer_records table is not synced ---
+
+def test_customer_records_do_not_trigger_sheets_calls(db, sheets):
     _insert_customer(db, "Q-001")
     _insert_customer(db, "Q-002")
 
     _sync_records(db, sheets)
 
-    assert sheets.append_customer_record.call_count == 2
+    sheets.append_accepted_quote.assert_not_called()
+    sheets.append_rejected_quote.assert_not_called()
 
 
-def test_marks_customer_records_synced_after_write(db, sheets):
-    _insert_customer(db)
+# --- Mixed accepted + rejected ---
+
+def test_accepted_and_rejected_routed_separately(db, sheets):
+    _insert_accepted(db, "Q-A")
+    _insert_rejected(db, "Q-R")
 
     _sync_records(db, sheets)
 
-    assert len(db.get_unsynced_customer_records()) == 0
+    assert sheets.append_accepted_quote.call_count == 1
+    assert sheets.append_rejected_quote.call_count == 1
 
 
 # --- Error handling ---
 
-def test_sheets_exception_does_not_crash_sync(db, sheets):
-    _insert_quote(db, "Q-001")
-    sheets.append_quote_record.side_effect = Exception("API error")
+def test_accepted_sheets_exception_does_not_crash_sync(db, sheets):
+    _insert_accepted(db, "Q-001")
+    sheets.append_accepted_quote.side_effect = Exception("API error")
 
     _sync_records(db, sheets)  # should not raise
 
 
-def test_partial_failure_syncs_remaining_records(db, sheets):
-    _insert_quote(db, "Q-001")
-    _insert_quote(db, "Q-002")
-    _insert_quote(db, "Q-003")
+def test_rejected_sheets_exception_does_not_crash_sync(db, sheets):
+    _insert_rejected(db)
+    sheets.append_rejected_quote.side_effect = Exception("API error")
+
+    _sync_records(db, sheets)  # should not raise
+
+
+def test_partial_accepted_failure_syncs_remaining(db, sheets):
+    _insert_accepted(db, "Q-001")
+    _insert_accepted(db, "Q-002")
+    _insert_accepted(db, "Q-003")
 
     call_count = 0
 
@@ -108,22 +187,15 @@ def test_partial_failure_syncs_remaining_records(db, sheets):
         nonlocal call_count
         call_count += 1
         if call_count == 2:
-            raise Exception("API error on second record")
+            raise Exception("API error on second")
 
-    sheets.append_quote_record.side_effect = fail_on_second
+    sheets.append_accepted_quote.side_effect = fail_on_second
 
     _sync_records(db, sheets)
 
-    unsynced = db.get_unsynced_quote_records()
+    unsynced = db.get_unsynced_accepted_quotes()
     assert len(unsynced) == 1
     assert unsynced[0]["quote_number"] == "Q-002"
-
-
-def test_customer_record_exception_does_not_crash_sync(db, sheets):
-    _insert_customer(db)
-    sheets.append_customer_record.side_effect = Exception("API error")
-
-    _sync_records(db, sheets)  # should not raise
 
 
 # --- SyncResult return value ---
@@ -133,9 +205,9 @@ def test_returns_sync_result_type(db, sheets):
     assert isinstance(result, SyncResult)
 
 
-def test_result_counts_synced_quotes(db, sheets):
-    _insert_quote(db, "Q-001")
-    _insert_quote(db, "Q-002")
+def test_result_counts_synced_quotes_for_accepted(db, sheets):
+    _insert_accepted(db, "Q-001")
+    _insert_accepted(db, "Q-002")
 
     result = _sync_records(db, sheets)
 
@@ -143,9 +215,9 @@ def test_result_counts_synced_quotes(db, sheets):
     assert result.failed_quotes == 0
 
 
-def test_result_counts_failed_quotes(db, sheets):
-    _insert_quote(db, "Q-001")
-    sheets.append_quote_record.side_effect = Exception("API error")
+def test_result_counts_failed_quotes_for_accepted(db, sheets):
+    _insert_accepted(db)
+    sheets.append_accepted_quote.side_effect = Exception("API error")
 
     result = _sync_records(db, sheets)
 
@@ -153,8 +225,8 @@ def test_result_counts_failed_quotes(db, sheets):
     assert result.failed_quotes == 1
 
 
-def test_result_counts_synced_customers(db, sheets):
-    _insert_customer(db, "Q-001")
+def test_result_counts_synced_customers_for_rejected(db, sheets):
+    _insert_rejected(db)
 
     result = _sync_records(db, sheets)
 
@@ -162,9 +234,9 @@ def test_result_counts_synced_customers(db, sheets):
     assert result.failed_customers == 0
 
 
-def test_result_counts_failed_customers(db, sheets):
-    _insert_customer(db)
-    sheets.append_customer_record.side_effect = Exception("API error")
+def test_result_counts_failed_customers_for_rejected(db, sheets):
+    _insert_rejected(db)
+    sheets.append_rejected_quote.side_effect = Exception("API error")
 
     result = _sync_records(db, sheets)
 

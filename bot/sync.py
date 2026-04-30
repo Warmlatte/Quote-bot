@@ -16,46 +16,40 @@ class SyncResult:
 
 
 def sync_records(db: DBClient, sheets: SheetsClient) -> SyncResult:
+    # synced_quotes = accepted rows synced; synced_customers = rejected rows synced
     synced_quotes = 0
     failed_quotes = 0
     synced_customers = 0
     failed_customers = 0
 
-    for record in db.get_unsynced_quote_records():
+    for record in db.get_unsynced_accepted_quotes():
         try:
-            sheets.append_quote_record(
-                quote_number=record["quote_number"],
-                customer_name=record["customer_name"],
-                resin_label=record["resin_label"],
-                body_count=record["body_count"],
-                material_cost=record["material_cost"],
-                processing_fee=record["processing_fee"],
-                auto_discount=record["auto_discount"] == "95折",
-                manual_discount=record["manual_discount"],
-                subtotal=record["subtotal"],
-                final_total=record["final_total"],
-                order_status=record["order_status"],
-                decision=record["decision"],
-            )
-            db.mark_quote_record_synced(record["id"])
-            synced_quotes += 1
-        except Exception:
-            logger.exception("Failed to sync quote record id=%s", record["id"])
-            failed_quotes += 1
-
-    for record in db.get_unsynced_customer_records():
-        try:
-            sheets.append_customer_record(
+            sheets.append_accepted_quote(
+                created_at=record["created_at"],
                 quote_number=record["quote_number"],
                 customer_name=record["customer_name"],
                 drive_folder_url=record["drive_folder_url"],
                 final_total=record["final_total"],
-                pdf_url=record["pdf_url"],
             )
-            db.mark_customer_record_synced(record["id"])
+            db.mark_quote_record_synced(record["id"])
+            synced_quotes += 1
+        except Exception:
+            logger.exception("Failed to sync accepted quote id=%s", record["id"])
+            failed_quotes += 1
+
+    for record in db.get_unsynced_rejected_quotes():
+        try:
+            sheets.append_rejected_quote(
+                created_at=record["created_at"],
+                customer_name=record["customer_name"],
+                final_total=record["final_total"],
+                file_details_text=record["file_details_text"] or "",
+                rejection_reason=record["rejection_reason"] or "",
+            )
+            db.mark_quote_record_synced(record["id"])
             synced_customers += 1
         except Exception:
-            logger.exception("Failed to sync customer record id=%s", record["id"])
+            logger.exception("Failed to sync rejected quote id=%s", record["id"])
             failed_customers += 1
 
     return SyncResult(

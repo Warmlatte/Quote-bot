@@ -1,4 +1,5 @@
 import asyncio
+import io
 import os
 import tempfile
 from dataclasses import dataclass
@@ -15,10 +16,9 @@ from bot.pricing.engine import ResinType, apply_manual_discounts, calculate_quot
 from bot.pricing.model_reader import read_models
 from bot.sheets.client import SheetsClient
 
-_RESIN_OPTIONS: list[tuple[str, ResinType, bool]] = [
-    ("RPG高精度樹脂", ResinType.RPG, False),
-    ("透明樹脂（不調色）", ResinType.CLEAR, False),
-    ("透明樹脂（需調色）", ResinType.CLEAR, True),
+_RESIN_BASE_OPTIONS: list[tuple[str, ResinType]] = [
+    ("RPG高精度樹脂", ResinType.RPG),
+    ("透明樹脂", ResinType.CLEAR),
 ]
 
 
@@ -33,6 +33,16 @@ class _ModalData:
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-testable)
 # ---------------------------------------------------------------------------
+
+def _format_file_details(file_details: list[dict]) -> str:
+    if not file_details:
+        return ""
+    lines = [
+        f"{f['filename']}: {f['volume_ml']:.2f}ml / {f['body_count']}件"
+        for f in file_details
+    ]
+    return "\n".join(lines)
+
 
 def _guild_check(interaction: discord.Interaction, guild_id: int) -> bool:
     return interaction.guild_id == guild_id
@@ -104,6 +114,29 @@ def _build_quote_embed(
 # Discord Views & Modal
 # ---------------------------------------------------------------------------
 
+class RejectReasonModal(discord.ui.Modal, title="拒絕原因"):
+    reason_input = discord.ui.TextInput(
+        label="簡短拒絕理由",
+        max_length=200,
+        required=False,
+    )
+
+    def __init__(self, action_view: "QuoteActionView") -> None:
+        super().__init__()
+        self._action_view = action_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        reason = self.reason_input.value.strip() if self.reason_input.value else ""
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, self._action_view._do_reject, reason)
+        except Exception as exc:
+            await interaction.followup.send(f"❌ 處理失敗：{exc}", ephemeral=True)
+            return
+        await interaction.followup.send("❌ 報價已記錄為拒絕。", ephemeral=True)
+
+
 class QuoteModal(discord.ui.Modal, title="3D 列印估價"):
     customer_name_input = discord.ui.TextInput(
         label="客戶名稱", max_length=50, placeholder="例：骰吧王小明"
@@ -149,38 +182,74 @@ class ResinSelectView(discord.ui.View):
         self._modal_data = modal_data
         self._config = config
         self._cog = cog
-        self._selected_idx: int | None = None
+        self._selected_resin: ResinType | None = None
+        self._colored = False
 
         select = discord.ui.Select(
             placeholder="選擇樹脂種類...",
             options=[
-                discord.SelectOption(label=label, value=str(i))
-                for i, (label, _, _) in enumerate(_RESIN_OPTIONS)
+                discord.SelectOption(label=label, value=resin.value)
+                for label, resin in _RESIN_BASE_OPTIONS
             ],
         )
         select.callback = self._on_select
         self.add_item(select)
 
-    async def _on_select(self, interaction: discord.Interaction) -> None:
-        self._selected_idx = int(interaction.data["values"][0])
-        await interaction.response.defer()
+        # 取得裝飾器建立的調色按鈕引用，用於動態啟用/停用
+        self._colored_btn: discord.ui.Button | None = next(
+            (
+                item for item in self.children
+                if isinstance(item, discord.ui.Button) and item.label == "🎨 調色"
+            ),
+            None,
+        )
 
-    @discord.ui.button(label="開始計算", style=discord.ButtonStyle.primary)
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        self._selected_resin = ResinType(interaction.data["values"][0])
+        self._colored = False
+        if self._colored_btn is not None:
+            self._colored_btn.disabled = self._selected_resin != ResinType.CLEAR
+            self._colored_btn.style = discord.ButtonStyle.secondary
+        resin_label = next(l for l, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
+        await interaction.response.edit_message(
+            content=f"請選擇樹脂種類：\n✅ 已選擇：{resin_label}",
+            view=self,
+        )
+
+    @discord.ui.button(label="🎨 調色", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+    async def toggle_color(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._colored = not self._colored
+        button.style = (
+            discord.ButtonStyle.success if self._colored else discord.ButtonStyle.secondary
+        )
+        resin_label = next(l for l, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
+        color_suffix = "（調色）" if self._colored else ""
+        await interaction.response.edit_message(
+            content=f"請選擇樹脂種類：\n✅ 已選擇：{resin_label}{color_suffix}",
+            view=self,
+        )
+
+    @discord.ui.button(label="開始計算", style=discord.ButtonStyle.primary, row=1)
     async def start_calc(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if self._selected_idx is None:
+        if self._selected_resin is None:
             await interaction.response.send_message(
                 "⚠️ 請先選擇樹脂種類。", ephemeral=True
             )
             return
 
-        label, resin, colored = _RESIN_OPTIONS[self._selected_idx]
+        resin_label = next(l for l, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
+        if self._selected_resin == ResinType.CLEAR and self._colored:
+            resin_label += "（調色）"
+
         await interaction.response.edit_message(
             content="⏳ 正在讀取模型並計算中...", view=None
         )
         await self._cog.run_quote_calculation(
-            interaction, self._modal_data, resin, colored, label
+            interaction, self._modal_data, self._selected_resin, self._colored, resin_label
         )
 
 
@@ -292,40 +361,44 @@ class QuoteActionView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         loop = asyncio.get_event_loop()
         try:
-            pdf_url = await loop.run_in_executor(None, self._do_accept)
+            pdf_bytes = await loop.run_in_executor(None, self._generate_pdf)
         except Exception as exc:
             await interaction.followup.send(f"❌ 處理失敗：{exc}", ephemeral=True)
             return
-        await interaction.followup.send(
-            f"✅ 報價已接受！PDF 報價單：{pdf_url}", ephemeral=True
+
+        msg = await interaction.followup.send(
+            content="✅ 報價已接受！PDF 報價單如附件。",
+            file=discord.File(
+                io.BytesIO(pdf_bytes),
+                filename=f"{self._modal_data.quote_number}.pdf",
+            ),
+            ephemeral=True,
         )
+        pdf_url = msg.attachments[0].url if msg.attachments else "Discord 附件"
+        try:
+            await loop.run_in_executor(None, self._record_acceptance, pdf_url)
+        except Exception as exc:
+            await interaction.followup.send(f"⚠️ 報價已接受但記錄寫入失敗：{exc}", ephemeral=True)
 
     @discord.ui.button(label="❌ 拒絕報價", style=discord.ButtonStyle.danger)
     async def reject_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        loop = asyncio.get_event_loop()
-        try:
-            await loop.run_in_executor(None, self._do_reject)
-        except Exception as exc:
-            await interaction.followup.send(f"❌ 處理失敗：{exc}", ephemeral=True)
-            return
-        await interaction.followup.send("❌ 報價已記錄為拒絕。", ephemeral=True)
+        await interaction.response.send_modal(RejectReasonModal(self))
 
     # ---- blocking helpers (run in executor) ----
 
-    def _do_accept(self) -> str:
-        md = self._modal_data
-        qr = self._quote_result
-        cfg = self._config
+    def _manual_discount_str(self) -> str:
         parts = []
         if self._manual_nine_ten:
             parts.append("九折")
         if self._manual_free_ship or self._final_free_shipping:
             parts.append("免運費")
-        manual_discount_str = " + ".join(parts) if parts else "無"
+        return " + ".join(parts) if parts else "無"
 
+    def _generate_pdf(self) -> bytes:
+        md = self._modal_data
+        qr = self._quote_result
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = os.path.join(tmp, f"{md.quote_number}.pdf")
             generate_quote_pdf(
@@ -338,14 +411,18 @@ class QuoteActionView(discord.ui.View):
                 processing_fee=qr.processing_fee,
                 subtotal=qr.subtotal,
                 auto_discount_amount=qr.auto_discount_amount,
-                manual_discount=manual_discount_str,
+                manual_discount=self._manual_discount_str(),
                 final_total=self._final_total,
                 order_status=qr.order_status,
                 output_path=pdf_path,
             )
-            drive = DriveClient(cfg.google_service_account_json)
-            pdf_url = drive.upload_file(pdf_path, md.folder_id)
+            with open(pdf_path, "rb") as f:
+                return f.read()
 
+    def _record_acceptance(self, pdf_url: str) -> None:
+        md = self._modal_data
+        qr = self._quote_result
+        manual_discount_str = self._manual_discount_str()
         self._db.insert_customer_record(
             quote_number=md.quote_number,
             customer_name=md.customer_name,
@@ -366,19 +443,14 @@ class QuoteActionView(discord.ui.View):
             final_total=self._final_total,
             order_status=qr.order_status,
             decision="接受",
+            drive_folder_url=md.drive_folder_url,
         )
-        return pdf_url
 
-    def _do_reject(self) -> None:
+    def _do_reject(self, rejection_reason: str = "") -> None:
         md = self._modal_data
         qr = self._quote_result
-        cfg = self._config
-        parts = []
-        if self._manual_nine_ten:
-            parts.append("九折")
-        if self._manual_free_ship or self._final_free_shipping:
-            parts.append("免運費")
-        manual_discount_str = " + ".join(parts) if parts else "無"
+        manual_discount_str = self._manual_discount_str()
+        file_details_text = _format_file_details(self._file_details)
 
         self._db.insert_quote_record(
             quote_number=md.quote_number,
@@ -393,6 +465,8 @@ class QuoteActionView(discord.ui.View):
             final_total=self._final_total,
             order_status=qr.order_status,
             decision="拒絕",
+            file_details_text=file_details_text,
+            rejection_reason=rejection_reason,
         )
 
 
