@@ -52,6 +52,13 @@ class DriveClient:
                 _, done = downloader.next_chunk()
         return dest_path
 
+    def rename_folder(self, folder_id: str, name: str) -> None:
+        self._service.files().update(
+            fileId=folder_id,
+            body={"name": name},
+            supportsAllDrives=True,
+        ).execute()
+
     def upload_file(
         self,
         file_path: str,

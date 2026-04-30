@@ -107,6 +107,24 @@ class TestDownloadFile:
         assert result == dest
 
 
+class TestRenameFolder:
+    def test_calls_files_update_with_name(self):
+        from bot.drive.client import DriveClient
+        with patch("bot.drive.client.Credentials.from_service_account_info"), \
+             patch("bot.drive.client.build") as mock_build:
+            mock_service = MagicMock()
+            mock_build.return_value = mock_service
+            client = DriveClient(SERVICE_ACCOUNT_JSON)
+            client.rename_folder("folder_abc", "王小明")
+
+        mock_service.files.return_value.update.assert_called_once_with(
+            fileId="folder_abc",
+            body={"name": "王小明"},
+            supportsAllDrives=True,
+        )
+        mock_service.files.return_value.update.return_value.execute.assert_called_once()
+
+
 class TestUploadFile:
     def test_returns_web_view_link(self, tmp_path):
         from bot.drive.client import DriveClient

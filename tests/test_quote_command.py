@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 from unittest.mock import MagicMock, AsyncMock, patch, call
 import discord
@@ -22,6 +23,34 @@ def _make_interaction(guild_id: int = 111, role_ids: list[int] | None = None):
     member.roles = roles
     interaction.user = member
     return interaction
+
+
+# ---------------------------------------------------------------------------
+# _rename_drive_folder
+# ---------------------------------------------------------------------------
+
+class TestRenameDriveFolder:
+    @pytest.mark.asyncio
+    async def test_calls_rename_folder_on_success(self):
+        from bot.commands.quote import _rename_drive_folder
+        config = MagicMock()
+        config.google_service_account_json = '{"type": "service_account"}'
+        mock_drive = MagicMock()
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive):
+            await _rename_drive_folder(config, "folder_id_xyz", "測試客戶")
+        mock_drive.rename_folder.assert_called_once_with("folder_id_xyz", "測試客戶")
+
+    @pytest.mark.asyncio
+    async def test_swallows_exception_and_logs_warning(self):
+        from bot.commands.quote import _rename_drive_folder
+        config = MagicMock()
+        config.google_service_account_json = '{"type": "service_account"}'
+        mock_drive = MagicMock()
+        mock_drive.rename_folder.side_effect = Exception("Drive API error")
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
+             patch("bot.commands.quote._logger") as mock_logger:
+            await _rename_drive_folder(config, "folder_id_xyz", "測試客戶")
+        mock_logger.warning.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

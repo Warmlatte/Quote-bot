@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -9,12 +10,23 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Config
+
+_logger = logging.getLogger(__name__)
 from bot.db.client import DBClient
 from bot.drive.client import DriveClient, extract_folder_id
 from bot.pdf_gen.generator import generate_quote_pdf
 from bot.pricing.engine import ResinType, apply_manual_discounts, calculate_quote
 from bot.pricing.model_reader import read_models
 from bot.sheets.client import SheetsClient
+
+async def _rename_drive_folder(config: Config, folder_id: str, name: str) -> None:
+    loop = asyncio.get_event_loop()
+    try:
+        drive = DriveClient(config.google_service_account_json)
+        await loop.run_in_executor(None, drive.rename_folder, folder_id, name)
+    except Exception as exc:
+        _logger.warning("資料夾重命名失敗：%s", exc)
+
 
 _RESIN_BASE_OPTIONS: list[tuple[str, ResinType]] = [
     ("RPG高精度樹脂", ResinType.RPG),
@@ -173,6 +185,9 @@ class QuoteModal(discord.ui.Modal, title="3D 列印估價"):
         view = ResinSelectView(modal_data=modal_data, config=self._config, cog=self._cog)
         await interaction.response.send_message(
             "請選擇樹脂種類：", view=view, ephemeral=True
+        )
+        asyncio.create_task(
+            _rename_drive_folder(self._config, folder_id, modal_data.customer_name)
         )
 
 
@@ -358,7 +373,7 @@ class QuoteActionView(discord.ui.View):
     async def accept_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         loop = asyncio.get_event_loop()
         try:
             pdf_bytes = await loop.run_in_executor(None, self._generate_pdf)
@@ -372,7 +387,6 @@ class QuoteActionView(discord.ui.View):
                 io.BytesIO(pdf_bytes),
                 filename=f"{self._modal_data.quote_number}.pdf",
             ),
-            ephemeral=True,
         )
         pdf_url = msg.attachments[0].url if msg.attachments else "Discord 附件"
         try:
@@ -543,7 +557,8 @@ class QuoteCog(commands.Cog):
             config=self.config,
             db=self._db,
         )
-        await interaction.edit_original_response(content=None, embed=embed, view=view)
+        await interaction.edit_original_response(content="✅ 估價已發布至頻道。", embed=None)
+        await interaction.channel.send(embed=embed, view=view)
 
     def _sync_calculate(
         self,
