@@ -1,3 +1,4 @@
+import io
 import os
 from datetime import date
 
@@ -7,9 +8,9 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     HRFlowable,
-    Image as RLImage,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -197,105 +198,127 @@ def generate_quote_pdf(
 ) -> str:
     _ensure_font()
 
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=A4,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
-        topMargin=20 * mm,
-        bottomMargin=25 * mm,
+    def _make_story() -> list:
+        s: list = []
+
+        # ── 標題區 ──────────────────────────────────────────────────────────
+        s.append(Paragraph("骰吧 The Roll Bar", _style(18, align="CENTER")))
+        s.append(_sp(2))
+        s.append(Paragraph("光固化 3D 列印代工服務報價單", _style(13, align="CENTER")))
+        s.append(_sp(4))
+        s.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=4 * mm))
+
+        # ── 一、委託規格明細 ─────────────────────────────────────────────────
+        s.append(_section_title("一、委託規格明細"))
+        s.append(_sp(3))
+
+        total_body_count = sum(f["body_count"] for f in file_details)
+        total_volume_ml = sum(f["volume_ml"] for f in file_details)
+
+        for line in [
+            f"估價單編號：{quote_number}",
+            f"客戶名稱：{customer_name}",
+            f"日期：{date.today().isoformat()}",
+            f"樹脂種類：{resin_label}",
+            f"物件總件數：{total_body_count} 件",
+            f"樹脂體積總計：{total_volume_ml:.2f} ml",
+        ]:
+            s.append(_bullet(line))
+        s.append(_sp(4))
+
+        # 檔案明細表
+        detail_data = [["檔名", "體積 (ml)", "件數"]]
+        for f in file_details:
+            detail_data.append([f["filename"], f"{f['volume_ml']:.4f}", str(f["body_count"])])
+
+        detail_table = Table(detail_data, colWidths=[100 * mm, 40 * mm, 25 * mm])
+        detail_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), _FONT_NAME),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ]))
+        s.append(detail_table)
+
+        if error_files:
+            s.append(_sp(2))
+            s.append(Paragraph(f"⚠ 異常檔案（已跳過）：{', '.join(error_files)}", _style(9)))
+
+        s.append(_sp(4))
+
+        # 費用明細表
+        cost_data: list[list[str]] = [
+            ["材料費", f"NT$ {material_cost:,}"],
+            ["加工費", f"NT$ {processing_fee:,}"],
+            ["小計", f"NT$ {subtotal:,}"],
+        ]
+        if auto_discount_amount > 0:
+            cost_data.append(["固定折扣 (95折)", f"- NT$ {auto_discount_amount:,}"])
+        if manual_discount != "無":
+            cost_data.append(["手動折扣", manual_discount])
+        final_row_idx = len(cost_data)
+        cost_data.append(["最終總價", f"NT$ {final_total:,}"])
+        cost_data.append(["訂單狀態", order_status])
+
+        cost_table = Table(cost_data, colWidths=[60 * mm, 105 * mm])
+        cost_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), _FONT_NAME),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("FONTNAME", (0, final_row_idx), (-1, final_row_idx), _FONT_NAME_BOLD),
+            ("FONTSIZE", (0, final_row_idx), (-1, final_row_idx), 11),
+            ("BACKGROUND", (0, final_row_idx), (-1, final_row_idx), colors.lightyellow),
+        ]))
+        s.append(cost_table)
+
+        # ── 靜態條款區塊 ────────────────────────────────────────────────────
+        s.extend(_build_section_2())
+        s.extend(_build_section_3())
+        s.extend(_build_section_4())
+
+        # ── 聯絡資訊 ────────────────────────────────────────────────────────
+        s.append(_sp(6))
+        s.append(Paragraph("聯絡方式：", _style(10)))
+        s.append(Paragraph("骰吧工作室", _style(10)))
+        s.append(Paragraph("Instagram：the.roll.bar", _style(10)))
+        s.append(Paragraph("Email：official@therollbar.xyz", _style(10)))
+
+        return s
+
+    # ── 第一遍：計算總頁數 ───────────────────────────────────────────────────
+    _last_page: list[int] = [0]
+
+    def _count_pages(canvas, doc) -> None:
+        _last_page[0] = doc.page
+
+    _doc_count = SimpleDocTemplate(
+        io.BytesIO(), pagesize=A4,
+        leftMargin=20 * mm, rightMargin=20 * mm,
+        topMargin=20 * mm, bottomMargin=42 * mm,
     )
+    _doc_count.build(_make_story(), onFirstPage=_count_pages, onLaterPages=_count_pages)
+    total_pages = _last_page[0]
 
-    story: list = []
+    # ── 頁尾 + 最後一頁 Logo（置於頁尾文字正上方）────────────────────────────
+    def _footer_and_logo(canvas, doc) -> None:
+        _draw_footer(canvas, doc)
+        if doc.page == total_pages and os.path.exists(_LOGO_PATH):
+            img_reader = ImageReader(_LOGO_PATH)
+            img_w, img_h = img_reader.getSize()
+            logo_w = 30 * mm
+            logo_h = logo_w * img_h / img_w
+            logo_x = (A4[0] - logo_w) / 2
+            logo_y = 16 * mm  # 頁尾文字在 10mm，上方留 6mm 間距
+            canvas.saveState()
+            canvas.drawImage(_LOGO_PATH, logo_x, logo_y, width=logo_w, height=logo_h)
+            canvas.restoreState()
 
-    # ── 標題區 ────────────────────────────────────────────────────────────────
-    story.append(Paragraph("骰吧 The Roll Bar", _style(18, align="CENTER")))
-    story.append(_sp(2))
-    story.append(Paragraph("光固化 3D 列印代工服務報價單", _style(13, align="CENTER")))
-    story.append(_sp(4))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=4 * mm))
-
-    # ── 一、委託規格明細 ───────────────────────────────────────────────────────
-    story.append(_section_title("一、委託規格明細"))
-    story.append(_sp(3))
-
-    total_body_count = sum(f["body_count"] for f in file_details)
-    total_volume_ml = sum(f["volume_ml"] for f in file_details)
-
-    for line in [
-        f"估價單編號：{quote_number}",
-        f"客戶名稱：{customer_name}",
-        f"日期：{date.today().isoformat()}",
-        f"樹脂種類：{resin_label}",
-        f"物件總件數：{total_body_count} 件",
-        f"樹脂體積總計：{total_volume_ml:.2f} ml",
-    ]:
-        story.append(_bullet(line))
-    story.append(_sp(4))
-
-    # 檔案明細表
-    detail_data = [["檔名", "體積 (ml)", "件數"]]
-    for f in file_details:
-        detail_data.append([f["filename"], f"{f['volume_ml']:.4f}", str(f["body_count"])])
-
-    detail_table = Table(detail_data, colWidths=[100 * mm, 40 * mm, 25 * mm])
-    detail_table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), _FONT_NAME),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-    ]))
-    story.append(detail_table)
-
-    if error_files:
-        story.append(_sp(2))
-        story.append(Paragraph(f"⚠ 異常檔案（已跳過）：{', '.join(error_files)}", _style(9)))
-
-    story.append(_sp(4))
-
-    # 費用明細表
-    cost_data: list[list[str]] = [
-        ["材料費", f"NT$ {material_cost:,}"],
-        ["加工費", f"NT$ {processing_fee:,}"],
-        ["小計", f"NT$ {subtotal:,}"],
-    ]
-    if auto_discount_amount > 0:
-        cost_data.append(["固定折扣 (95折)", f"- NT$ {auto_discount_amount:,}"])
-    if manual_discount != "無":
-        cost_data.append(["手動折扣", manual_discount])
-    final_row_idx = len(cost_data)
-    cost_data.append(["最終總價", f"NT$ {final_total:,}"])
-    cost_data.append(["訂單狀態", order_status])
-
-    cost_table = Table(cost_data, colWidths=[60 * mm, 105 * mm])
-    cost_table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), _FONT_NAME),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("FONTNAME", (0, final_row_idx), (-1, final_row_idx), _FONT_NAME_BOLD),
-        ("FONTSIZE", (0, final_row_idx), (-1, final_row_idx), 11),
-        ("BACKGROUND", (0, final_row_idx), (-1, final_row_idx), colors.lightyellow),
-    ]))
-    story.append(cost_table)
-
-    # ── 靜態條款區塊 ──────────────────────────────────────────────────────────
-    story.extend(_build_section_2())
-    story.extend(_build_section_3())
-    story.extend(_build_section_4())
-
-    # ── 聯絡資訊 + Logo ───────────────────────────────────────────────────────
-    story.append(_sp(6))
-    story.append(Paragraph("聯絡方式：", _style(10)))
-    story.append(Paragraph("骰吧工作室", _style(10)))
-    story.append(Paragraph("Instagram：the.roll.bar", _style(10)))
-    story.append(Paragraph("Email：official@therollbar.xyz", _style(10)))
-    story.append(_sp(6))
-
-    if os.path.exists(_LOGO_PATH):
-        logo = RLImage(_LOGO_PATH, width=60 * mm, height=60 * mm, kind="proportional")
-        logo.hAlign = "CENTER"
-        story.append(logo)
-
-    doc.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    # ── 第二遍：生成最終 PDF ─────────────────────────────────────────────────
+    doc = SimpleDocTemplate(
+        output_path, pagesize=A4,
+        leftMargin=20 * mm, rightMargin=20 * mm,
+        topMargin=20 * mm, bottomMargin=42 * mm,
+    )
+    doc.build(_make_story(), onFirstPage=_footer_and_logo, onLaterPages=_footer_and_logo)
     return output_path
