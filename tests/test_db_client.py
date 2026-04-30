@@ -281,6 +281,30 @@ def test_duplicate_drive_url_does_not_create_second_record(db, sample_customer_r
     assert len(records) == 1
 
 
+# --- count_accepted_quotes_today ---
+
+def test_count_accepted_quotes_today_empty(db):
+    assert db.count_accepted_quotes_today("260430") == 0
+
+
+def test_count_accepted_quotes_today_counts_matching_prefix(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "quote_number": "trb26043001", "decision": "接受"})
+    db.insert_quote_record(**{**sample_quote_record, "quote_number": "trb26043002", "decision": "接受"})
+    assert db.count_accepted_quotes_today("260430") == 2
+
+
+def test_count_accepted_quotes_today_excludes_other_dates(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "quote_number": "trb26043001", "decision": "接受"})
+    db.insert_quote_record(**{**sample_quote_record, "quote_number": "trb26050101", "decision": "接受"})
+    assert db.count_accepted_quotes_today("260430") == 1
+
+
+def test_count_accepted_quotes_today_excludes_rejected(db, sample_quote_record):
+    db.insert_quote_record(**{**sample_quote_record, "quote_number": "trb26043001", "decision": "接受"})
+    db.insert_quote_record(**{**sample_quote_record, "quote_number": "trb26043002", "decision": "拒絕"})
+    assert db.count_accepted_quotes_today("260430") == 1
+
+
 # --- migration idempotency ---
 
 def test_migration_is_idempotent(tmp_path, sample_quote_record):

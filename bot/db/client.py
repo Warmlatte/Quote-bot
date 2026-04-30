@@ -135,6 +135,14 @@ class DBClient:
         self._conn.commit()
         return True
 
+    def count_accepted_quotes_today(self, date_prefix: str) -> int:
+        """Count accepted quote_records whose quote_number starts with trb{date_prefix}."""
+        cursor = self._conn.execute(
+            "SELECT COUNT(*) FROM quote_records WHERE quote_number LIKE ? AND decision = '接受'",
+            (f"trb{date_prefix}%",),
+        )
+        return cursor.fetchone()[0]
+
     def get_unsynced_quote_records(self) -> list[dict[str, Any]]:
         cursor = self._conn.execute(
             "SELECT * FROM quote_records WHERE synced_at IS NULL ORDER BY id"

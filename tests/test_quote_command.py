@@ -29,6 +29,48 @@ def _make_interaction(guild_id: int = 111, role_ids: list[int] | None = None):
 # _rename_drive_folder
 # ---------------------------------------------------------------------------
 
+class TestGenerateQuoteNumber:
+    def test_first_quote_of_day_is_01(self, tmp_path):
+        from bot.commands.quote import _generate_quote_number
+        db = DBClient(str(tmp_path / "test.db"))
+        result = _generate_quote_number(db)
+        assert result.startswith("trb")
+        assert result.endswith("01")
+        assert len(result) == 11  # trb + YYMMDD(6) + NN(2)
+
+    def test_second_quote_increments(self, tmp_path):
+        from bot.commands.quote import _generate_quote_number
+        from bot.commands.quote import _ModalData
+        db = DBClient(str(tmp_path / "test.db"))
+        # 先用 _generate_quote_number 的日期前綴手動插一筆接受記錄
+        from datetime import datetime, timedelta, timezone
+        tz = timezone(timedelta(hours=8))
+        today = datetime.now(tz).strftime("%y%m%d")
+        db.insert_quote_record(
+            quote_number=f"trb{today}01",
+            customer_name="A",
+            resin_label="RPG高精度樹脂",
+            body_count=1,
+            material_cost=100,
+            processing_fee=80,
+            auto_discount="無",
+            manual_discount="無",
+            subtotal=180,
+            final_total=180,
+            order_status="正常",
+            decision="接受",
+        )
+        result = _generate_quote_number(db)
+        assert result == f"trb{today}02"
+
+    def test_format_trb_yymmdd_nn(self, tmp_path):
+        from bot.commands.quote import _generate_quote_number
+        db = DBClient(str(tmp_path / "test.db"))
+        result = _generate_quote_number(db)
+        import re
+        assert re.match(r"^trb\d{6}\d{2}$", result)
+
+
 class TestRenameDriveFolder:
     @pytest.mark.asyncio
     async def test_calls_rename_folder_on_success(self):
@@ -95,7 +137,6 @@ class TestRoleCheck:
 # ---------------------------------------------------------------------------
 
 BASE_EMBED_KWARGS = dict(
-    quote_number="Q20260426-001",
     customer_name="測試客戶",
     resin_label="RPG高精度樹脂",
     body_count=3,
@@ -123,9 +164,13 @@ class TestBuildQuoteEmbed:
         embed = self._build()
         assert isinstance(embed, discord.Embed)
 
-    def test_title_contains_quote_number(self):
-        embed = self._build(quote_number="Q-XYZ")
-        assert "Q-XYZ" in embed.title
+    def test_title_contains_quote_number_when_provided(self):
+        embed = self._build(quote_number="trb26043001")
+        assert "trb26043001" in embed.title
+
+    def test_title_without_quote_number_when_empty(self):
+        embed = self._build()
+        assert embed.title == "📋 估價單"
 
     def test_contains_customer_name(self):
         embed = self._build(customer_name="VIP客戶")
@@ -207,7 +252,6 @@ def _make_view_stub(db: DBClient):
     stub._modal_data = _ModalData(
         customer_name="測試客戶",
         drive_folder_url="https://drive.google.com/drive/folders/abc",
-        quote_number="Q-001",
         folder_id="abc",
     )
     stub._quote_result = _make_quote_result()
@@ -230,7 +274,7 @@ class TestDoAccept:
         db = DBClient(str(tmp_path / "test.db"))
         stub = _make_view_stub(db)
 
-        QuoteActionView._record_acceptance(stub, "Discord 附件")
+        QuoteActionView._record_acceptance(stub, "Discord 附件", "trb26043001")
 
         quote_records = db.get_unsynced_quote_records()
         customer_records = db.get_unsynced_customer_records()
@@ -239,12 +283,24 @@ class TestDoAccept:
         assert quote_records[0]["decision"] == "接受"
         assert customer_records[0]["pdf_url"] == "Discord 附件"
 
+    def test_writes_quote_number_to_record(self, tmp_path):
+        from bot.commands.quote import QuoteActionView
+        db = DBClient(str(tmp_path / "test.db"))
+        stub = _make_view_stub(db)
+
+        QuoteActionView._record_acceptance(stub, "Discord 附件", "trb26043001")
+
+        quote_records = db.get_unsynced_quote_records()
+        customer_records = db.get_unsynced_customer_records()
+        assert quote_records[0]["quote_number"] == "trb26043001"
+        assert customer_records[0]["quote_number"] == "trb26043001"
+
     def test_writes_drive_folder_url_to_quote_record(self, tmp_path):
         from bot.commands.quote import QuoteActionView
         db = DBClient(str(tmp_path / "test.db"))
         stub = _make_view_stub(db)
 
-        QuoteActionView._record_acceptance(stub, "Discord 附件")
+        QuoteActionView._record_acceptance(stub, "Discord 附件", "trb26043001")
 
         quote_records = db.get_unsynced_quote_records()
         assert quote_records[0]["drive_folder_url"] == "https://drive.google.com/drive/folders/abc"
@@ -255,7 +311,7 @@ class TestDoAccept:
         stub = _make_view_stub(db)
 
         with patch("bot.commands.quote.SheetsClient") as mock_sheets_cls:
-            QuoteActionView._record_acceptance(stub, "Discord 附件")
+            QuoteActionView._record_acceptance(stub, "Discord 附件", "trb26043001")
 
         mock_sheets_cls.assert_not_called()
 

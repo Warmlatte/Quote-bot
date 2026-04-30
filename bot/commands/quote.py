@@ -4,20 +4,28 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Config
+from bot.db.client import DBClient
 
 _logger = logging.getLogger(__name__)
-from bot.db.client import DBClient
+_TZ_TAIPEI = timezone(timedelta(hours=8))
 from bot.drive.client import DriveClient, extract_folder_id
 from bot.pdf_gen.generator import generate_quote_pdf
 from bot.pricing.engine import ResinType, apply_manual_discounts, calculate_quote
 from bot.pricing.model_reader import read_models
 from bot.sheets.client import SheetsClient
+
+def _generate_quote_number(db: DBClient) -> str:
+    today = datetime.now(_TZ_TAIPEI).strftime("%y%m%d")
+    count = db.count_accepted_quotes_today(today)
+    return f"trb{today}{count + 1:02d}"
+
 
 async def _rename_drive_folder(config: Config, folder_id: str, name: str) -> None:
     loop = asyncio.get_event_loop()
@@ -38,7 +46,6 @@ _RESIN_BASE_OPTIONS: list[tuple[str, ResinType]] = [
 class _ModalData:
     customer_name: str
     drive_folder_url: str
-    quote_number: str
     folder_id: str
 
 
@@ -65,7 +72,6 @@ def _role_check(interaction: discord.Interaction, role_id: int) -> bool:
 
 
 def _build_quote_embed(
-    quote_number: str,
     customer_name: str,
     resin_label: str,
     body_count: int,
@@ -78,9 +84,10 @@ def _build_quote_embed(
     order_status: str,
     file_details: list[dict],
     error_files: list[str],
+    quote_number: str = "",
 ) -> discord.Embed:
     embed = discord.Embed(
-        title=f"📋 估價單 {quote_number}",
+        title=f"📋 估價單 {quote_number}" if quote_number else "📋 估價單",
         color=discord.Color.blue(),
     )
     embed.add_field(name="客戶名稱", value=customer_name, inline=True)
@@ -157,9 +164,6 @@ class QuoteModal(discord.ui.Modal, title="3D 列印估價"):
         label="Google Drive 資料夾連結",
         placeholder="https://drive.google.com/drive/folders/...",
     )
-    quote_number_input = discord.ui.TextInput(
-        label="估價單編號", max_length=30, placeholder="例：Q20260426-001"
-    )
 
     def __init__(self, config: Config, cog: "QuoteCog") -> None:
         super().__init__()
@@ -179,7 +183,6 @@ class QuoteModal(discord.ui.Modal, title="3D 列印估價"):
         modal_data = _ModalData(
             customer_name=self.customer_name_input.value,
             drive_folder_url=self.drive_url_input.value,
-            quote_number=self.quote_number_input.value,
             folder_id=folder_id,
         )
         view = ResinSelectView(modal_data=modal_data, config=self._config, cog=self._cog)
@@ -319,7 +322,6 @@ class DiscountView(discord.ui.View):
         manual_discount_str = " + ".join(parts) if parts else "無"
 
         embed = _build_quote_embed(
-            quote_number=av._modal_data.quote_number,
             customer_name=av._modal_data.customer_name,
             resin_label=av._resin_label,
             body_count=av._quote_result.body_count,
@@ -376,21 +378,26 @@ class QuoteActionView(discord.ui.View):
         await interaction.response.defer()
         loop = asyncio.get_event_loop()
         try:
-            pdf_bytes = await loop.run_in_executor(None, self._generate_pdf)
+            quote_number = await loop.run_in_executor(
+                None, _generate_quote_number, self._db
+            )
+            pdf_bytes = await loop.run_in_executor(
+                None, self._generate_pdf, quote_number
+            )
         except Exception as exc:
             await interaction.followup.send(f"❌ 處理失敗：{exc}", ephemeral=True)
             return
 
         msg = await interaction.followup.send(
-            content="✅ 報價已接受！PDF 報價單如附件。",
+            content=f"✅ 報價已接受！PDF 報價單如附件。（{quote_number}）",
             file=discord.File(
                 io.BytesIO(pdf_bytes),
-                filename=f"{self._modal_data.quote_number}.pdf",
+                filename=f"{quote_number}.pdf",
             ),
         )
         pdf_url = msg.attachments[0].url if msg.attachments else "Discord 附件"
         try:
-            await loop.run_in_executor(None, self._record_acceptance, pdf_url)
+            await loop.run_in_executor(None, self._record_acceptance, pdf_url, quote_number)
         except Exception as exc:
             await interaction.followup.send(f"⚠️ 報價已接受但記錄寫入失敗：{exc}", ephemeral=True)
 
@@ -410,13 +417,13 @@ class QuoteActionView(discord.ui.View):
             parts.append("免運費")
         return " + ".join(parts) if parts else "無"
 
-    def _generate_pdf(self) -> bytes:
+    def _generate_pdf(self, quote_number: str) -> bytes:
         md = self._modal_data
         qr = self._quote_result
         with tempfile.TemporaryDirectory() as tmp:
-            pdf_path = os.path.join(tmp, f"{md.quote_number}.pdf")
+            pdf_path = os.path.join(tmp, f"{quote_number}.pdf")
             generate_quote_pdf(
-                quote_number=md.quote_number,
+                quote_number=quote_number,
                 customer_name=md.customer_name,
                 resin_label=self._resin_label,
                 file_details=self._file_details,
@@ -433,12 +440,12 @@ class QuoteActionView(discord.ui.View):
             with open(pdf_path, "rb") as f:
                 return f.read()
 
-    def _record_acceptance(self, pdf_url: str) -> None:
+    def _record_acceptance(self, pdf_url: str, quote_number: str) -> None:
         md = self._modal_data
         qr = self._quote_result
         manual_discount_str = self._manual_discount_str()
         inserted = self._db.insert_customer_record(
-            quote_number=md.quote_number,
+            quote_number=quote_number,
             customer_name=md.customer_name,
             drive_folder_url=md.drive_folder_url,
             final_total=self._final_total,
@@ -447,7 +454,7 @@ class QuoteActionView(discord.ui.View):
         if not inserted:
             raise ValueError(f"此雲端連結已有接受記錄，無法重複提交：{md.drive_folder_url}")
         self._db.insert_quote_record(
-            quote_number=md.quote_number,
+            quote_number=quote_number,
             customer_name=md.customer_name,
             resin_label=self._resin_label,
             body_count=qr.body_count,
@@ -469,7 +476,7 @@ class QuoteActionView(discord.ui.View):
         file_details_text = _format_file_details(self._file_details)
 
         self._db.insert_quote_record(
-            quote_number=md.quote_number,
+            quote_number="",
             customer_name=md.customer_name,
             resin_label=self._resin_label,
             body_count=qr.body_count,
@@ -534,7 +541,6 @@ class QuoteCog(commands.Cog):
             return
 
         embed = _build_quote_embed(
-            quote_number=modal_data.quote_number,
             customer_name=modal_data.customer_name,
             resin_label=resin_label,
             body_count=quote_result.body_count,
