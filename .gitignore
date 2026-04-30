@@ -2,10 +2,12 @@
 openspec/.vector-search.db*
 openspec/
 docs/
+superpowers/
 CLAUDE.md
 .claude/
 .env
 credentials/
+*.db
 *.pyc
 __pycache__/
 .pytest_cache/
