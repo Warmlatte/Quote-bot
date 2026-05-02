@@ -1,6 +1,7 @@
 import math
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 
 class ResinType(str, Enum):
@@ -67,15 +68,21 @@ def apply_auto_discounts(subtotal: int) -> tuple[int, bool, str]:
     return subtotal, False, "正常"
 
 
-def apply_manual_discounts(
-    base_total: int,
-    nine_ten: bool,
-    free_ship: bool,
-    already_free: bool,
-) -> tuple[int, bool]:
-    total = math.floor(base_total * 0.9) if nine_ten else base_total
-    effective_free = free_ship or already_free
-    return total, effective_free
+@dataclass(frozen=True)
+class DiscountInput:
+    mode: Literal["pct", "fixed", "none"]
+    value: float
+
+
+def apply_manual_discount(base_total: int, discount: DiscountInput) -> tuple[int, int]:
+    if discount.mode == "pct":
+        new_total = math.floor(base_total * discount.value)
+        return new_total, base_total - new_total
+    if discount.mode == "fixed":
+        amount = int(discount.value)
+        return base_total - amount, amount
+    return base_total, 0
+
 
 
 def calculate_quote(

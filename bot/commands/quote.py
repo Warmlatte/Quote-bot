@@ -18,7 +18,7 @@ _logger = logging.getLogger(__name__)
 _TZ_TAIPEI = timezone(timedelta(hours=8))
 from bot.drive.client import DriveClient, extract_folder_id
 from bot.pdf_gen.generator import generate_quote_pdf
-from bot.pricing.engine import QuoteResult, ResinType, apply_manual_discounts, calculate_quote
+from bot.pricing.engine import DiscountInput, QuoteResult, ResinType, apply_manual_discount, calculate_quote
 from bot.pricing.model_reader import read_models
 from bot.sheets.client import SheetsClient
 
@@ -305,20 +305,18 @@ class DiscountView(discord.ui.View):
     ) -> None:
         av = self._action_view
         base = av._quote_result.final_total
-        already_free = av._quote_result.auto_free_ship
 
-        new_total, new_free = apply_manual_discounts(
-            base, self._nine_ten, self._free_ship, already_free
-        )
+        discount = DiscountInput(mode="pct", value=0.9) if self._nine_ten else DiscountInput(mode="none", value=0)
+        new_total, _ = apply_manual_discount(base, discount)
         av._final_total = new_total
-        av._final_free_shipping = new_free
+        av._final_free_shipping = av._quote_result.auto_free_ship or self._free_ship
         av._manual_nine_ten = self._nine_ten
         av._manual_free_ship = self._free_ship
 
         parts = []
         if self._nine_ten:
             parts.append("九折")
-        if self._free_ship or new_free:
+        if self._free_ship or av._final_free_shipping:
             parts.append("免運費")
         manual_discount_str = " + ".join(parts) if parts else "無"
 

@@ -5,9 +5,10 @@ from bot.pricing.engine import (
     calculate_material_cost,
     calculate_processing_fee,
     apply_auto_discounts,
-    apply_manual_discounts,
     calculate_quote,
     QuoteResult,
+    DiscountInput,
+    apply_manual_discount,
 )
 
 
@@ -86,41 +87,6 @@ class TestApplyAutoDiscounts:
         assert status == "免運費"
 
 
-# ── 手動折扣 ──────────────────────────────────────────────────────────────────
-
-class TestApplyManualDiscounts:
-    def test_nine_ten_discount(self):
-        # floor(1000 * 0.9) = 900
-        total, free_ship = apply_manual_discounts(1000, nine_ten=True, free_ship=False, already_free=False)
-        assert total == 900
-        assert free_ship is False
-
-    def test_free_ship_only(self):
-        total, free_ship = apply_manual_discounts(1000, nine_ten=False, free_ship=True, already_free=False)
-        assert total == 1000
-        assert free_ship is True
-
-    def test_both_discounts_combined(self):
-        # floor(1000 * 0.9) = 900, free_ship = True
-        total, free_ship = apply_manual_discounts(1000, nine_ten=True, free_ship=True, already_free=False)
-        assert total == 900
-        assert free_ship is True
-
-    def test_no_discount(self):
-        total, free_ship = apply_manual_discounts(1000, nine_ten=False, free_ship=False, already_free=False)
-        assert total == 1000
-        assert free_ship is False
-
-    def test_already_free_preserved(self):
-        total, free_ship = apply_manual_discounts(1000, nine_ten=False, free_ship=False, already_free=True)
-        assert total == 1000
-        assert free_ship is True
-
-    def test_nine_ten_floor_truncates(self):
-        # floor(1001 * 0.9) = floor(900.9) = 900
-        total, _ = apply_manual_discounts(1001, nine_ten=True, free_ship=False, already_free=False)
-        assert total == 900
-
 
 # ── 完整計價 Pipeline ──────────────────────────────────────────────────────────
 
@@ -172,3 +138,57 @@ class TestCalculateQuote:
         assert hasattr(result, "auto_free_ship")
         assert hasattr(result, "order_status")
         assert hasattr(result, "final_total")
+
+
+# ── 新手動折扣（DiscountInput）────────────────────────────────────────────────
+
+class TestDiscountInput:
+    def test_pct_mode_fields(self):
+        d = DiscountInput(mode="pct", value=0.9)
+        assert d.mode == "pct"
+        assert d.value == 0.9
+
+    def test_fixed_mode_fields(self):
+        d = DiscountInput(mode="fixed", value=100)
+        assert d.mode == "fixed"
+        assert d.value == 100
+
+    def test_none_mode_fields(self):
+        d = DiscountInput(mode="none", value=0)
+        assert d.mode == "none"
+        assert d.value == 0
+
+
+class TestApplyManualDiscount:
+    @pytest.mark.parametrize("mode,value,base_total,expected_new,expected_amount", [
+        ("pct",   0.9,  1000, 900,  100),
+        ("pct",   0.8,  1250, 1000, 250),
+        ("pct",   0.9,  1001, 900,  101),
+        ("fixed", 100,  1000, 900,  100),
+        ("fixed", 500,  1000, 500,  500),
+        ("none",  0,    1000, 1000, 0),
+    ])
+    def test_boundary_cases(self, mode, value, base_total, expected_new, expected_amount):
+        discount = DiscountInput(mode=mode, value=value)
+        new_total, discount_amount = apply_manual_discount(base_total, discount)
+        assert new_total == expected_new
+        assert discount_amount == expected_amount
+
+    def test_pct_floor_truncation(self):
+        # floor(1001 * 0.9) = floor(900.9) = 900, discount = 101
+        discount = DiscountInput(mode="pct", value=0.9)
+        new_total, discount_amount = apply_manual_discount(1001, discount)
+        assert new_total == 900
+        assert discount_amount == 101
+
+    def test_fixed_returns_tuple(self):
+        discount = DiscountInput(mode="fixed", value=200)
+        result = apply_manual_discount(1000, discount)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_none_returns_unchanged(self):
+        discount = DiscountInput(mode="none", value=0)
+        new_total, discount_amount = apply_manual_discount(999, discount)
+        assert new_total == 999
+        assert discount_amount == 0
