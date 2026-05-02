@@ -20,9 +20,8 @@ BASE_KWARGS: dict[str, Any] = dict(
     processing_fee=230,
     subtotal=674,
     auto_discount_amount=0,
-    manual_discount="無",
+    manual_discount_amount=0,
     final_total=674,
-    order_status="正常",
 )
 
 
@@ -55,7 +54,7 @@ def test_pdf_with_discounts_and_errors(tmp_path):
     generate_quote_pdf(
         **{**BASE_KWARGS,
            "auto_discount_amount": 350,
-           "manual_discount": "九折+免運",
+           "manual_discount_amount": 100,
            "error_files": ["broken.stl"],
            "output_path": output},
     )
@@ -113,3 +112,75 @@ def test_pdf_footer_present(tmp_path):
     generate_quote_pdf(**BASE_KWARGS, output_path=output)
     text = _read_pdf_text(output)
     assert "the.roll.bar" in text
+
+
+# ── New signature tests (manual_discount_amount / shipping params) ──────────
+
+NEW_BASE_KWARGS: dict[str, Any] = dict(
+    quote_number="Q20260426-001",
+    customer_name="測試客戶",
+    resin_label="RPG高精度樹脂",
+    file_details=[
+        {"filename": "model_a.stl", "volume_ml": 125.51, "body_count": 2},
+    ],
+    error_files=[],
+    material_cost=444,
+    processing_fee=230,
+    subtotal=674,
+    auto_discount_amount=0,
+    manual_discount_amount=0,
+    final_total=674,
+)
+
+
+def test_new_signature_no_discount_no_shipping(tmp_path):
+    from bot.pdf_gen.generator import generate_quote_pdf
+    output = str(tmp_path / "quote.pdf")
+    result = generate_quote_pdf(**NEW_BASE_KWARGS, output_path=output)
+    assert os.path.exists(output)
+    assert os.path.getsize(output) > 1000
+    text = _read_pdf_text(output)
+    assert "手動折扣" not in text
+    assert "訂單狀態" not in text
+
+
+def test_new_signature_discount_label_is_zhekow(tmp_path):
+    from bot.pdf_gen.generator import generate_quote_pdf
+    output = str(tmp_path / "quote.pdf")
+    generate_quote_pdf(**{**NEW_BASE_KWARGS, "manual_discount_amount": 100, "final_total": 574}, output_path=output)
+    text = _read_pdf_text(output)
+    assert "折扣" in text
+    assert "- NT$ 100" in text
+    assert "手動折扣" not in text
+
+
+def test_new_signature_shipping_fee_row_shown(tmp_path):
+    from bot.pdf_gen.generator import generate_quote_pdf
+    output = str(tmp_path / "quote.pdf")
+    generate_quote_pdf(
+        **{**NEW_BASE_KWARGS, "shipping_address": "台北市大安區", "shipping_fee": 60, "final_total": 734},
+        output_path=output,
+    )
+    text = _read_pdf_text(output)
+    assert "運費" in text
+    assert "NT$ 60" in text
+    assert "台北市大安區" in text
+
+
+def test_new_signature_shipping_free_label(tmp_path):
+    from bot.pdf_gen.generator import generate_quote_pdf
+    output = str(tmp_path / "quote.pdf")
+    generate_quote_pdf(
+        **{**NEW_BASE_KWARGS, "shipping_address": "台北市大安區", "shipping_fee": 0, "shipping_free_label": True},
+        output_path=output,
+    )
+    text = _read_pdf_text(output)
+    assert "免運費" in text
+
+
+def test_new_signature_order_status_absent(tmp_path):
+    from bot.pdf_gen.generator import generate_quote_pdf
+    output = str(tmp_path / "quote.pdf")
+    generate_quote_pdf(**NEW_BASE_KWARGS, output_path=output)
+    text = _read_pdf_text(output)
+    assert "訂單狀態" not in text
