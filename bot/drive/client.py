@@ -13,6 +13,7 @@ _SCOPES = ["https://www.googleapis.com/auth/drive"]
 _FOLDER_RE = re.compile(r"drive\.google\.com/drive/folders/([^/?]+)")
 _MODEL_EXTS = {".stl", ".obj"}
 _FOLDER_MIME = "application/vnd.google-apps.folder"
+_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 _GOOGLE_APPS_MIME_PREFIX = "application/vnd.google-apps."
 
 
@@ -61,7 +62,7 @@ class DriveClient:
         while True:
             kwargs: dict = dict(
                 q=query,
-                fields="nextPageToken, files(id, name, mimeType)",
+                fields="nextPageToken, files(id, name, mimeType, shortcutDetails)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
             )
@@ -82,6 +83,16 @@ class DriveClient:
                         results.extend(
                             self._scan_folder(item["id"], current_depth + 1, max_depth)
                         )
+                elif item["mimeType"] == _SHORTCUT_MIME:
+                    details = item.get("shortcutDetails", {})
+                    target_id = details.get("targetId")
+                    target_mime = details.get("targetMimeType", "")
+                    if (
+                        target_id
+                        and not target_mime.startswith(_GOOGLE_APPS_MIME_PREFIX)
+                        and os.path.splitext(item["name"])[1].lower() in _MODEL_EXTS
+                    ):
+                        results.append({"id": target_id, "name": item["name"]})
                 elif (
                     not item["mimeType"].startswith(_GOOGLE_APPS_MIME_PREFIX)
                     and os.path.splitext(item["name"])[1].lower() in _MODEL_EXTS

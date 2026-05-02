@@ -275,13 +275,68 @@ class TestListModelFilesRecursive:
         result = self._run(folder_responses)
         assert result[0] == {"id": "abc", "name": "model.stl"}
 
-    def test_shortcuts_excluded_from_model_listing(self):
-        """mimeType 為 google-apps.shortcut 的捷徑不應被列入模型清單。"""
+    def test_shortcut_resolved_via_target_id(self):
+        """捷徑應解析 shortcutDetails.targetId，以目標 ID 加入清單（非捷徑自身 ID）。"""
         folder_responses = {
             "parent": [
-                {"id": "1", "name": "model.stl",    "mimeType": "application/octet-stream"},
-                {"id": "2", "name": "shortcut.stl", "mimeType": "application/vnd.google-apps.shortcut"},
-                {"id": "3", "name": "doc.stl",      "mimeType": "application/vnd.google-apps.document"},
+                {"id": "f1", "name": "model.stl", "mimeType": "application/octet-stream"},
+                {
+                    "id": "sc1",
+                    "name": "copy.stl",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {
+                        "targetId": "real_file_id",
+                        "targetMimeType": "application/octet-stream",
+                    },
+                },
+            ]
+        }
+        result = self._run(folder_responses)
+        assert len(result) == 2
+        ids = {f["id"] for f in result}
+        assert "f1" in ids
+        assert "real_file_id" in ids  # 解析後使用目標 ID
+        assert "sc1" not in ids       # 捷徑自身 ID 不應出現
+
+    def test_shortcut_to_google_apps_type_excluded(self):
+        """捷徑指向 Google Apps 類型（如 Google 文件）應被排除。"""
+        folder_responses = {
+            "parent": [
+                {
+                    "id": "sc1",
+                    "name": "doc.stl",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {
+                        "targetId": "gdoc_id",
+                        "targetMimeType": "application/vnd.google-apps.document",
+                    },
+                },
+            ]
+        }
+        result = self._run(folder_responses)
+        assert result == []
+
+    def test_shortcut_without_target_id_excluded(self):
+        """無效捷徑（沒有 targetId）應被排除。"""
+        folder_responses = {
+            "parent": [
+                {
+                    "id": "sc_broken",
+                    "name": "model.stl",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {},
+                },
+            ]
+        }
+        result = self._run(folder_responses)
+        assert result == []
+
+    def test_non_model_google_apps_file_excluded(self):
+        """非捷徑的 Google Apps 類型（如 Google 文件）仍應被排除。"""
+        folder_responses = {
+            "parent": [
+                {"id": "1", "name": "model.stl", "mimeType": "application/octet-stream"},
+                {"id": "2", "name": "doc.stl",   "mimeType": "application/vnd.google-apps.document"},
             ]
         }
         result = self._run(folder_responses)
