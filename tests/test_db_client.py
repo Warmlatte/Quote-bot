@@ -315,3 +315,36 @@ def test_migration_is_idempotent(tmp_path, sample_quote_record):
     db2 = DBClient(path)  # second init on same DB should not raise
     records = db2.get_unsynced_quote_records()
     assert len(records) == 1
+
+
+def test_migration_adds_shipping_columns_to_new_db(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "new.db")
+    DBClient(path)
+    conn = sqlite3.connect(path)
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(quote_records)").fetchall()]
+    conn.close()
+    assert "shipping_fee" in cols
+    assert "shipping_address" in cols
+
+
+def test_migration_shipping_columns_idempotent(tmp_path, sample_quote_record):
+    path = str(tmp_path / "existing.db")
+    db1 = DBClient(path)
+    db1.insert_quote_record(**sample_quote_record)
+    db2 = DBClient(path)  # should not raise even though columns already exist
+    assert len(db2.get_unsynced_quote_records()) == 1
+
+
+def test_insert_quote_record_with_shipping_fee_and_address(db, sample_quote_record):
+    db.insert_quote_record(**sample_quote_record, shipping_fee=60, shipping_address="台北市大安區")
+    r = db.get_unsynced_quote_records()[0]
+    assert r["shipping_fee"] == 60
+    assert r["shipping_address"] == "台北市大安區"
+
+
+def test_insert_quote_record_default_shipping_is_zero_empty(db, sample_quote_record):
+    db.insert_quote_record(**sample_quote_record)
+    r = db.get_unsynced_quote_records()[0]
+    assert r["shipping_fee"] == 0
+    assert r["shipping_address"] == ""

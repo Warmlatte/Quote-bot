@@ -65,6 +65,8 @@ class DBClient:
             "ALTER TABLE quote_records ADD COLUMN drive_folder_url TEXT DEFAULT NULL",
             "ALTER TABLE quote_records ADD COLUMN file_details_text TEXT DEFAULT NULL",
             "ALTER TABLE quote_records ADD COLUMN rejection_reason TEXT DEFAULT NULL",
+            "ALTER TABLE quote_records ADD COLUMN shipping_fee INTEGER DEFAULT 0",
+            "ALTER TABLE quote_records ADD COLUMN shipping_address TEXT DEFAULT ''",
         ]
         for stmt in new_columns:
             try:
@@ -90,6 +92,8 @@ class DBClient:
         drive_folder_url: str | None = None,
         file_details_text: str | None = None,
         rejection_reason: str | None = None,
+        shipping_fee: int = 0,
+        shipping_address: str = "",
     ) -> None:
         self._conn.execute(
             """
@@ -97,14 +101,16 @@ class DBClient:
                 (created_at, quote_number, customer_name, resin_label, body_count,
                  material_cost, processing_fee, auto_discount, manual_discount,
                  subtotal, final_total, order_status, decision,
-                 drive_folder_url, file_details_text, rejection_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 drive_folder_url, file_details_text, rejection_reason,
+                 shipping_fee, shipping_address)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _now_taipei(), quote_number, customer_name, resin_label, body_count,
                 material_cost, processing_fee, auto_discount, manual_discount,
                 subtotal, final_total, order_status, decision,
                 drive_folder_url, file_details_text, rejection_reason,
+                shipping_fee, shipping_address,
             ),
         )
         self._conn.commit()

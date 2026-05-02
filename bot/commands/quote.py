@@ -613,6 +613,8 @@ class QuoteActionView(discord.ui.View):
             order_status=qr.order_status,
             decision="接受",
             drive_folder_url=md.drive_folder_url,
+            shipping_fee=self._shipping_fee,
+            shipping_address=self._shipping_address,
         )
 
     def _do_reject(self, rejection_reason: str = "") -> None:
@@ -637,6 +639,8 @@ class QuoteActionView(discord.ui.View):
             decision="拒絕",
             file_details_text=file_details_text,
             rejection_reason=rejection_reason,
+            shipping_fee=self._shipping_fee,
+            shipping_address=self._shipping_address,
         )
 
 
