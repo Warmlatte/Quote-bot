@@ -577,6 +577,12 @@ class QuoteCog(commands.Cog):
         drive = DriveClient(self.config.google_service_account_json)
         model_files = drive.list_model_files_recursive(modal_data.folder_id)
 
+        if not model_files:
+            raise ValueError(
+                "資料夾中找不到 STL/OBJ 模型檔案。\n"
+                "請確認：① 資料夾連結正確 ② 資料夾已共享給 Bot 服務帳號 ③ 包含 .stl 或 .obj 檔案"
+            )
+
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
             for f in model_files:
@@ -587,6 +593,12 @@ class QuoteCog(commands.Cog):
                 paths.append(dest)
 
             results, error_files = asyncio.run(read_models(paths))
+
+        if not results:
+            raise ValueError(
+                f"找到 {len(error_files)} 個檔案但全部解析失敗（可能非 watertight 或格式損毀）：\n"
+                + "\n".join(f"• {f}" for f in error_files)
+            )
 
         total_volume = sum(r.volume_ml for r in results)
         total_bodies = sum(r.body_count for r in results)

@@ -573,14 +573,19 @@ class TestSyncCalculateUsesRecursiveListing:
     def test_calls_list_model_files_recursive(self):
         from bot.commands.quote import ResinType, QuoteCog
         mock_drive = MagicMock()
-        mock_drive.list_model_files_recursive.return_value = []
+        mock_drive.list_model_files_recursive.return_value = [{"id": "x1", "name": "model.stl"}]
+        mock_result = MagicMock()
+        mock_result.volume_ml = 1.0
+        mock_result.body_count = 1
+        mock_result.filename = "model.stl"
         with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
-             patch("bot.commands.quote.read_models", new_callable=AsyncMock, return_value=([], [])):
+             patch("bot.commands.quote.read_models", new_callable=AsyncMock,
+                   return_value=([mock_result], [])):
             QuoteCog._sync_calculate(self._make_cog(), self._make_modal_data(), ResinType.RPG, False)
         mock_drive.list_model_files_recursive.assert_called_once_with("test_folder")
         mock_drive.list_model_files.assert_not_called()
 
-    def test_downloads_each_model_file(self, tmp_path):
+    def test_downloads_each_model_file(self):
         from bot.commands.quote import ResinType, QuoteCog
         mock_drive = MagicMock()
         mock_drive.list_model_files_recursive.return_value = [
@@ -596,6 +601,32 @@ class TestSyncCalculateUsesRecursiveListing:
                    return_value=([mock_model_result], [])):
             QuoteCog._sync_calculate(self._make_cog(), self._make_modal_data(), ResinType.RPG, False)
         assert mock_drive.download_file.call_count == 2
+
+    def test_raises_when_folder_has_no_model_files(self):
+        """資料夾中找不到模型檔（可能未共享或空資料夾）應拋出明確 ValueError。"""
+        from bot.commands.quote import ResinType, QuoteCog
+        mock_drive = MagicMock()
+        mock_drive.list_model_files_recursive.return_value = []
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive):
+            with pytest.raises(ValueError, match="找不到"):
+                QuoteCog._sync_calculate(
+                    self._make_cog(), self._make_modal_data(), ResinType.RPG, False
+                )
+
+    def test_raises_when_all_model_files_fail_to_parse(self):
+        """所有模型解析失敗（非 watertight）應拋出明確 ValueError。"""
+        from bot.commands.quote import ResinType, QuoteCog
+        mock_drive = MagicMock()
+        mock_drive.list_model_files_recursive.return_value = [
+            {"id": "id1", "name": "broken.stl"},
+        ]
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
+             patch("bot.commands.quote.read_models", new_callable=AsyncMock,
+                   return_value=([], ["broken.stl"])):
+            with pytest.raises(ValueError, match="解析失敗"):
+                QuoteCog._sync_calculate(
+                    self._make_cog(), self._make_modal_data(), ResinType.RPG, False
+                )
 
     def test_same_filename_different_subfolders_use_unique_paths(self):
         """同名檔案來自不同子資料夾時，下載路徑必須不同（以 file ID 為子目錄）。"""
