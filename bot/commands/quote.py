@@ -80,11 +80,14 @@ def _build_quote_embed(
     processing_fee: int,
     subtotal: int,
     auto_discount_amount: int,
-    manual_discount: str,
     final_total: int,
     order_status: str,
     file_details: list[dict],
     error_files: list[str],
+    manual_discount_amount: int = 0,
+    shipping_fee: int = 0,
+    shipping_address: str = "",
+    shipping_free_label: bool = False,
     quote_number: str = "",
 ) -> discord.Embed:
     embed = discord.Embed(
@@ -98,14 +101,18 @@ def _build_quote_embed(
     embed.add_field(name="加工費", value=f"${processing_fee}", inline=True)
     embed.add_field(name="小計", value=f"${subtotal}", inline=True)
 
-    has_discount = auto_discount_amount > 0 or (manual_discount and manual_discount != "無")
-    if has_discount:
+    if auto_discount_amount > 0 or manual_discount_amount > 0:
         parts = []
         if auto_discount_amount > 0:
-            parts.append(f"自動折扣 -${auto_discount_amount}")
-        if manual_discount and manual_discount != "無":
-            parts.append(manual_discount)
+            parts.append(f"自動 -${auto_discount_amount}")
+        if manual_discount_amount > 0:
+            parts.append(f"手動 -${manual_discount_amount}")
         embed.add_field(name="折扣", value=" / ".join(parts), inline=False)
+
+    if shipping_address:
+        ship_val = "免運費" if shipping_free_label else f"NT$ {shipping_fee:,}"
+        embed.add_field(name="運費", value=ship_val, inline=True)
+        embed.add_field(name="寄送地址", value=shipping_address, inline=True)
 
     embed.add_field(name="訂單狀態", value=order_status, inline=True)
     embed.add_field(name="**最終總價**", value=f"**${final_total}**", inline=True)
@@ -462,10 +469,38 @@ class QuoteActionView(discord.ui.View):
         self._resin_label = resin_label
         self._config = config
         self._db = db
-        self._final_total = quote_result.final_total
-        self._final_free_shipping = quote_result.auto_free_ship
-        self._manual_nine_ten = False
-        self._manual_free_ship = False
+        self._manual_discount: DiscountInput = DiscountInput(mode="none", value=0)
+        self._manual_discount_amount: int = 0
+        self._shipping_fee: int = 0
+        self._shipping_address: str = ""
+        self._shipping_free_label: bool = False
+        self._message: discord.Message | None = None
+
+    def _compute_final_total(self) -> int:
+        return self._quote_result.final_total - self._manual_discount_amount + self._shipping_fee
+
+    async def _refresh_embed(self) -> None:
+        qr = self._quote_result
+        final_total = self._compute_final_total()
+        embed = _build_quote_embed(
+            customer_name=self._modal_data.customer_name,
+            resin_label=self._resin_label,
+            body_count=qr.body_count,
+            material_cost=qr.material_cost,
+            processing_fee=qr.processing_fee,
+            subtotal=qr.subtotal,
+            auto_discount_amount=qr.auto_discount_amount,
+            final_total=final_total,
+            order_status=qr.order_status,
+            file_details=self._file_details,
+            error_files=self._error_files,
+            manual_discount_amount=self._manual_discount_amount,
+            shipping_fee=self._shipping_fee,
+            shipping_address=self._shipping_address,
+            shipping_free_label=self._shipping_free_label,
+        )
+        if self._message is not None:
+            await self._message.edit(embed=embed, view=self)
 
     @discord.ui.button(label="✏️ 折扣", style=discord.ButtonStyle.secondary, row=0)
     async def discount_btn(
@@ -524,17 +559,10 @@ class QuoteActionView(discord.ui.View):
 
     # ---- blocking helpers (run in executor) ----
 
-    def _manual_discount_str(self) -> str:
-        parts = []
-        if self._manual_nine_ten:
-            parts.append("九折")
-        if self._manual_free_ship or self._final_free_shipping:
-            parts.append("免運費")
-        return " + ".join(parts) if parts else "無"
-
     def _generate_pdf(self, quote_number: str) -> bytes:
         md = self._modal_data
         qr = self._quote_result
+        final_total = self._compute_final_total()
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = os.path.join(tmp, f"{quote_number}.pdf")
             generate_quote_pdf(
@@ -547,9 +575,11 @@ class QuoteActionView(discord.ui.View):
                 processing_fee=qr.processing_fee,
                 subtotal=qr.subtotal,
                 auto_discount_amount=qr.auto_discount_amount,
-                manual_discount=self._manual_discount_str(),
-                final_total=self._final_total,
-                order_status=qr.order_status,
+                manual_discount_amount=self._manual_discount_amount,
+                final_total=final_total,
+                shipping_fee=self._shipping_fee,
+                shipping_address=self._shipping_address,
+                shipping_free_label=self._shipping_free_label,
                 output_path=pdf_path,
             )
             with open(pdf_path, "rb") as f:
@@ -558,16 +588,17 @@ class QuoteActionView(discord.ui.View):
     def _record_acceptance(self, pdf_url: str, quote_number: str) -> None:
         md = self._modal_data
         qr = self._quote_result
-        manual_discount_str = self._manual_discount_str()
+        final_total = self._compute_final_total()
         inserted = self._db.insert_customer_record(
             quote_number=quote_number,
             customer_name=md.customer_name,
             drive_folder_url=md.drive_folder_url,
-            final_total=self._final_total,
+            final_total=final_total,
             pdf_url=pdf_url,
         )
         if not inserted:
             raise ValueError(f"此雲端連結已有接受記錄，無法重複提交：{md.drive_folder_url}")
+        manual_discount_str = f"- NT$ {self._manual_discount_amount:,}" if self._manual_discount_amount > 0 else "無"
         self._db.insert_quote_record(
             quote_number=quote_number,
             customer_name=md.customer_name,
@@ -578,7 +609,7 @@ class QuoteActionView(discord.ui.View):
             auto_discount="95折" if qr.auto_discount_amount > 0 else "無",
             manual_discount=manual_discount_str,
             subtotal=qr.subtotal,
-            final_total=self._final_total,
+            final_total=final_total,
             order_status=qr.order_status,
             decision="接受",
             drive_folder_url=md.drive_folder_url,
@@ -587,8 +618,9 @@ class QuoteActionView(discord.ui.View):
     def _do_reject(self, rejection_reason: str = "") -> None:
         md = self._modal_data
         qr = self._quote_result
-        manual_discount_str = self._manual_discount_str()
+        final_total = self._compute_final_total()
         file_details_text = _format_file_details(self._file_details)
+        manual_discount_str = f"- NT$ {self._manual_discount_amount:,}" if self._manual_discount_amount > 0 else "無"
 
         self._db.insert_quote_record(
             quote_number="",
@@ -600,7 +632,7 @@ class QuoteActionView(discord.ui.View):
             auto_discount="95折" if qr.auto_discount_amount > 0 else "無",
             manual_discount=manual_discount_str,
             subtotal=qr.subtotal,
-            final_total=self._final_total,
+            final_total=final_total,
             order_status=qr.order_status,
             decision="拒絕",
             file_details_text=file_details_text,
@@ -663,7 +695,6 @@ class QuoteCog(commands.Cog):
             processing_fee=quote_result.processing_fee,
             subtotal=quote_result.subtotal,
             auto_discount_amount=quote_result.auto_discount_amount,
-            manual_discount="無",
             final_total=quote_result.final_total,
             order_status=quote_result.order_status,
             file_details=file_details,
@@ -679,7 +710,8 @@ class QuoteCog(commands.Cog):
             db=self._db,
         )
         await interaction.edit_original_response(content="✅ 估價已發布至頻道。", embed=None)
-        await cast(discord.abc.Messageable, interaction.channel).send(embed=embed, view=view)
+        msg = await cast(discord.abc.Messageable, interaction.channel).send(embed=embed, view=view)
+        view._message = msg
 
     def _sync_calculate(
         self,

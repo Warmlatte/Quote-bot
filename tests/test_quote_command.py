@@ -314,7 +314,6 @@ BASE_EMBED_KWARGS = dict(
     processing_fee=230,
     subtotal=674,
     auto_discount_amount=0,
-    manual_discount="無",
     final_total=674,
     order_status="正常",
     file_details=[
@@ -358,7 +357,7 @@ class TestBuildQuoteEmbed:
         assert any("未達低消" in v for v in field_values)
 
     def test_no_discount_field_when_zero(self):
-        embed = self._build(auto_discount_amount=0, manual_discount="無")
+        embed = self._build(auto_discount_amount=0, manual_discount_amount=0)
         field_names = [f.name or "" for f in embed.fields]
         assert not any("折扣" in n for n in field_names)
 
@@ -368,7 +367,7 @@ class TestBuildQuoteEmbed:
         assert any("折扣" in n for n in field_names)
 
     def test_manual_discount_field_shown_when_set(self):
-        embed = self._build(manual_discount="九折+免運")
+        embed = self._build(manual_discount_amount=100)
         field_names = [f.name or "" for f in embed.fields]
         assert any("折扣" in n for n in field_names)
 
@@ -417,6 +416,7 @@ def _make_quote_result(auto_discount_amount=0, auto_free_ship=False):
 def _make_view_stub(db: DBClient):
     """Return a MagicMock with the attributes QuoteActionView._do_* methods need."""
     from bot.commands.quote import _ModalData
+    from bot.pricing.engine import DiscountInput
     stub = MagicMock()
     stub._db = db
     stub._modal_data = _ModalData(
@@ -428,11 +428,12 @@ def _make_view_stub(db: DBClient):
     stub._resin_label = "RPG高精度樹脂"
     stub._file_details = []
     stub._error_files = []
-    stub._final_total = 560
-    stub._final_free_shipping = False
-    stub._manual_nine_ten = False
-    stub._manual_free_ship = False
-    stub._manual_discount_str = MagicMock(return_value="無")
+    stub._manual_discount = DiscountInput(mode="none", value=0)
+    stub._manual_discount_amount = 0
+    stub._shipping_fee = 0
+    stub._shipping_address = ""
+    stub._shipping_free_label = False
+    stub._compute_final_total = MagicMock(return_value=560)
     stub._config = MagicMock()
     stub._config.google_service_account_json = '{"type": "service_account"}'
     return stub
@@ -954,3 +955,70 @@ class TestShippingModal:
         action_view = _make_action_view_for_shipping(auto_free_ship=True)
         modal = ShippingModal(action_view, fee_default=0, free_toggled=False)
         assert modal.fee_field.default == "0"
+
+
+# ---------------------------------------------------------------------------
+# QuoteActionView final_total calculation
+# ---------------------------------------------------------------------------
+
+def _make_full_action_view(tmp_path, auto_discounted_total: int = 1000, auto_free_ship: bool = False):
+    """Instantiate a real QuoteActionView with in-memory DB for integration tests."""
+    from bot.commands.quote import QuoteActionView, _ModalData
+    from bot.pricing.engine import DiscountInput
+    db = DBClient(str(tmp_path / "test.db"))
+    modal_data = _ModalData(
+        customer_name="測試客戶",
+        drive_folder_url="https://drive.google.com/drive/folders/abc",
+        folder_id="abc",
+    )
+    qr = MagicMock()
+    qr.body_count = 3
+    qr.material_cost = 700
+    qr.processing_fee = 300
+    qr.subtotal = 1000
+    qr.auto_discount_amount = 0
+    qr.auto_free_ship = auto_free_ship
+    qr.final_total = auto_discounted_total
+    qr.order_status = "正常"
+    config = MagicMock()
+    config.google_service_account_json = '{}'
+    view = QuoteActionView(
+        modal_data=modal_data,
+        quote_result=qr,
+        file_details=[],
+        error_files=[],
+        resin_label="RPG高精度樹脂",
+        config=config,
+        db=db,
+    )
+    return view
+
+
+class TestQuoteActionViewFinalTotal:
+    @pytest.mark.asyncio
+    async def test_no_discount_no_shipping(self, tmp_path):
+        view = _make_full_action_view(tmp_path, auto_discounted_total=1000)
+        assert view._compute_final_total() == 1000
+
+    @pytest.mark.asyncio
+    async def test_discount_only(self, tmp_path):
+        from bot.pricing.engine import DiscountInput
+        view = _make_full_action_view(tmp_path, auto_discounted_total=1000)
+        view._manual_discount = DiscountInput(mode="pct", value=0.9)
+        view._manual_discount_amount = 100
+        assert view._compute_final_total() == 900
+
+    @pytest.mark.asyncio
+    async def test_shipping_only(self, tmp_path):
+        view = _make_full_action_view(tmp_path, auto_discounted_total=1000)
+        view._shipping_fee = 60
+        assert view._compute_final_total() == 1060
+
+    @pytest.mark.asyncio
+    async def test_discount_and_shipping(self, tmp_path):
+        from bot.pricing.engine import DiscountInput
+        view = _make_full_action_view(tmp_path, auto_discounted_total=1000)
+        view._manual_discount = DiscountInput(mode="pct", value=0.9)
+        view._manual_discount_amount = 100
+        view._shipping_fee = 60
+        assert view._compute_final_total() == 960
