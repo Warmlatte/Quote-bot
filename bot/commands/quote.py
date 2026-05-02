@@ -575,7 +575,7 @@ class QuoteCog(commands.Cog):
         colored: bool,
     ) -> tuple[list[dict], list[str], QuoteResult]:
         drive = DriveClient(self.config.google_service_account_json)
-        model_files = drive.list_model_files(modal_data.folder_id)
+        model_files = drive.list_model_files_recursive(modal_data.folder_id)
 
         with tempfile.TemporaryDirectory() as tmp:
             paths = []

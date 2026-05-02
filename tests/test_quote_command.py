@@ -96,6 +96,176 @@ class TestRenameDriveFolder:
 
 
 # ---------------------------------------------------------------------------
+# QuoteCog
+# ---------------------------------------------------------------------------
+
+class TestRejectReasonModal:
+    @pytest.mark.asyncio
+    async def test_init_stores_action_view(self):
+        from bot.commands.quote import RejectReasonModal
+        action_view = MagicMock()
+        modal = RejectReasonModal(action_view)
+        assert modal._action_view is action_view
+
+    @pytest.mark.asyncio
+    async def test_on_submit_calls_do_reject_with_reason(self):
+        from bot.commands.quote import RejectReasonModal
+        action_view = MagicMock()
+        action_view._do_reject = MagicMock()
+        modal = RejectReasonModal(action_view)
+        modal.reason_input = MagicMock()
+        modal.reason_input.value = "  太貴了  "
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        interaction.followup = AsyncMock()
+        await modal.on_submit(interaction)
+        action_view._do_reject.assert_called_once_with("太貴了")
+        interaction.followup.send.assert_called_once()
+
+
+class TestQuoteModal:
+    @pytest.mark.asyncio
+    async def test_init_stores_config_and_cog(self):
+        from bot.commands.quote import QuoteModal
+        config = MagicMock()
+        cog = MagicMock()
+        modal = QuoteModal(config, cog)
+        assert modal._config is config
+        assert modal._cog is cog
+
+    @pytest.mark.asyncio
+    async def test_on_submit_invalid_url_sends_error(self):
+        from bot.commands.quote import QuoteModal
+        modal = QuoteModal(MagicMock(), MagicMock())
+        modal.drive_url_input = MagicMock()
+        modal.drive_url_input.value = "not-a-valid-url"
+        modal.customer_name_input = MagicMock()
+        modal.customer_name_input.value = "客戶"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        interaction.response.send_message.assert_called_once()
+        call_kwargs = interaction.response.send_message.call_args[1]
+        assert call_kwargs.get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_on_submit_valid_url_sends_resin_select(self):
+        from bot.commands.quote import QuoteModal
+        modal = QuoteModal(MagicMock(), MagicMock())
+        modal.drive_url_input = MagicMock()
+        modal.drive_url_input.value = "https://drive.google.com/drive/folders/abc123"
+        modal.customer_name_input = MagicMock()
+        modal.customer_name_input.value = "測試客戶"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        with patch("bot.commands.quote._rename_drive_folder", new_callable=AsyncMock), \
+             patch("bot.commands.quote.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
+            mock_asyncio.get_event_loop = MagicMock()
+            await modal.on_submit(interaction)
+        interaction.response.send_message.assert_called_once()
+        call_kwargs = interaction.response.send_message.call_args[1]
+        assert call_kwargs.get("ephemeral") is True
+
+
+class TestQuoteCog:
+    def _make_cog(self):
+        from bot.commands.quote import QuoteCog
+        mock_bot = MagicMock()
+        config = MagicMock()
+        config.db_path = ":memory:"
+        return QuoteCog(mock_bot, config)
+
+    def test_init_sets_bot_and_config(self):
+        from bot.commands.quote import QuoteCog
+        mock_bot = MagicMock()
+        config = MagicMock()
+        config.db_path = ":memory:"
+        cog = QuoteCog(mock_bot, config)
+        assert cog.bot is mock_bot
+        assert cog.config is config
+
+    @pytest.mark.asyncio
+    async def test_quote_rejects_wrong_guild(self):
+        cog = self._make_cog()
+        cog.config.guild_id = 111
+        interaction = _make_interaction(guild_id=999, role_ids=[42])
+        interaction.response = AsyncMock()
+        await cog.quote.callback(cog, interaction)
+        interaction.response.send_message.assert_called_once()
+        call_kwargs = interaction.response.send_message.call_args[1]
+        assert call_kwargs.get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_quote_rejects_missing_role(self):
+        cog = self._make_cog()
+        cog.config.guild_id = 111
+        cog.config.member_role_id = 42
+        interaction = _make_interaction(guild_id=111, role_ids=[99])
+        interaction.response = AsyncMock()
+        await cog.quote.callback(cog, interaction)
+        interaction.response.send_message.assert_called_once()
+        call_kwargs = interaction.response.send_message.call_args[1]
+        assert call_kwargs.get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_quote_sends_modal_when_authorized(self):
+        cog = self._make_cog()
+        cog.config.guild_id = 111
+        cog.config.member_role_id = 42
+        interaction = _make_interaction(guild_id=111, role_ids=[42])
+        interaction.response = AsyncMock()
+        await cog.quote.callback(cog, interaction)
+        interaction.response.send_modal.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_quote_calculation_handles_exception(self):
+        cog = self._make_cog()
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.edit_original_response = AsyncMock()
+        from bot.commands.quote import _ModalData, ResinType
+        modal_data = _ModalData(
+            customer_name="測試",
+            drive_folder_url="https://drive.google.com/drive/folders/abc",
+            folder_id="abc",
+        )
+        with patch.object(cog, "_sync_calculate", side_effect=ValueError("oops")):
+            await cog.run_quote_calculation(interaction, modal_data, ResinType.RPG, False, "RPG")
+        interaction.edit_original_response.assert_called_once()
+        call_args = interaction.edit_original_response.call_args
+        assert "oops" in call_args[1].get("content", "")
+
+    @pytest.mark.asyncio
+    async def test_run_quote_calculation_success_sends_embed(self):
+        cog = self._make_cog()
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.edit_original_response = AsyncMock()
+        interaction.channel = AsyncMock()
+        interaction.channel.send = AsyncMock()
+
+        from bot.commands.quote import _ModalData, ResinType
+        modal_data = _ModalData(
+            customer_name="成功客戶",
+            drive_folder_url="https://drive.google.com/drive/folders/abc",
+            folder_id="abc",
+        )
+        mock_quote_result = MagicMock()
+        mock_quote_result.body_count = 2
+        mock_quote_result.material_cost = 200
+        mock_quote_result.processing_fee = 150
+        mock_quote_result.subtotal = 350
+        mock_quote_result.auto_discount_amount = 0
+        mock_quote_result.final_total = 350
+        mock_quote_result.order_status = "正常"
+
+        with patch.object(cog, "_sync_calculate", return_value=([], [], mock_quote_result)):
+            await cog.run_quote_calculation(interaction, modal_data, ResinType.RPG, False, "RPG高精度樹脂")
+
+        interaction.edit_original_response.assert_called_once_with(content="✅ 估價已發布至頻道。", embed=None)
+        interaction.channel.send.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # _guild_check
 # ---------------------------------------------------------------------------
 
@@ -383,6 +553,50 @@ class TestDoReject:
 # ---------------------------------------------------------------------------
 # _format_file_details
 # ---------------------------------------------------------------------------
+
+class TestSyncCalculateUsesRecursiveListing:
+    def _make_cog(self):
+        cog = MagicMock()
+        cog.config = MagicMock()
+        cog.config.google_service_account_json = '{"type": "service_account"}'
+        cog._db = MagicMock()
+        return cog
+
+    def _make_modal_data(self):
+        from bot.commands.quote import _ModalData
+        return _ModalData(
+            customer_name="測試",
+            drive_folder_url="https://drive.google.com/drive/folders/test_folder",
+            folder_id="test_folder",
+        )
+
+    def test_calls_list_model_files_recursive(self):
+        from bot.commands.quote import ResinType, QuoteCog
+        mock_drive = MagicMock()
+        mock_drive.list_model_files_recursive.return_value = []
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
+             patch("bot.commands.quote.read_models", new_callable=AsyncMock, return_value=([], [])):
+            QuoteCog._sync_calculate(self._make_cog(), self._make_modal_data(), ResinType.RPG, False)
+        mock_drive.list_model_files_recursive.assert_called_once_with("test_folder")
+        mock_drive.list_model_files.assert_not_called()
+
+    def test_downloads_each_model_file(self, tmp_path):
+        from bot.commands.quote import ResinType, QuoteCog
+        mock_drive = MagicMock()
+        mock_drive.list_model_files_recursive.return_value = [
+            {"id": "id1", "name": "a.stl"},
+            {"id": "id2", "name": "b.obj"},
+        ]
+        mock_model_result = MagicMock()
+        mock_model_result.volume_ml = 5.0
+        mock_model_result.body_count = 1
+        mock_model_result.filename = "a.stl"
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
+             patch("bot.commands.quote.read_models", new_callable=AsyncMock,
+                   return_value=([mock_model_result], [])):
+            QuoteCog._sync_calculate(self._make_cog(), self._make_modal_data(), ResinType.RPG, False)
+        assert mock_drive.download_file.call_count == 2
+
 
 class TestFormatFileDetails:
     def test_single_file(self):

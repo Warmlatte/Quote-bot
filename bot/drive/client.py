@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 
@@ -6,9 +7,12 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
+logger = logging.getLogger(__name__)
+
 _SCOPES = ["https://www.googleapis.com/auth/drive"]
 _FOLDER_RE = re.compile(r"drive\.google\.com/drive/folders/([^/?]+)")
 _MODEL_EXTS = {".stl", ".obj"}
+_FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
 def extract_folder_id(url: str) -> str:
@@ -40,6 +44,44 @@ class DriveClient:
             f for f in response.get("files", [])
             if os.path.splitext(f["name"])[1].lower() in _MODEL_EXTS
         ]
+
+    def list_model_files_recursive(
+        self, folder_id: str, max_depth: int = 2
+    ) -> list[dict]:
+        return self._scan_folder(folder_id, 0, max_depth)
+
+    def _scan_folder(
+        self, folder_id: str, current_depth: int, max_depth: int
+    ) -> list[dict]:
+        query = f"'{folder_id}' in parents and trashed = false"
+        response = (
+            self._service.files()
+            .list(
+                q=query,
+                fields="files(id, name, mimeType)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        results: list[dict] = []
+        for item in response.get("files", []):
+            if item["mimeType"] == _FOLDER_MIME:
+                if current_depth + 1 >= max_depth:
+                    logger.warning(
+                        "Skipping subfolder '%s' (id=%s): max_depth=%d reached",
+                        item["name"],
+                        item["id"],
+                        max_depth,
+                    )
+                else:
+                    results.extend(
+                        self._scan_folder(item["id"], current_depth + 1, max_depth)
+                    )
+            else:
+                if os.path.splitext(item["name"])[1].lower() in _MODEL_EXTS:
+                    results.append({"id": item["id"], "name": item["name"]})
+        return results
 
     def download_file(self, file_id: str, dest_path: str) -> str:
         request = self._service.files().get_media(

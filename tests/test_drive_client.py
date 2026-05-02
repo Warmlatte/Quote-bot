@@ -125,6 +125,157 @@ class TestRenameFolder:
         mock_service.files.return_value.update.return_value.execute.assert_called_once()
 
 
+class TestListModelFilesRecursive:
+    def _make_service_with_folder_responses(self, folder_responses: dict):
+        mock_service = MagicMock()
+
+        def list_side_effect(**kwargs):
+            q = kwargs.get("q", "")
+            folder_id = q.split("'")[1] if "'" in q else ""
+            result_mock = MagicMock()
+            result_mock.execute.return_value = {"files": folder_responses.get(folder_id, [])}
+            return result_mock
+
+        mock_service.files.return_value.list.side_effect = list_side_effect
+        return mock_service
+
+    def _run(self, folder_responses, folder_id="parent", **kwargs):
+        from bot.drive.client import DriveClient
+        mock_service = self._make_service_with_folder_responses(folder_responses)
+        with patch("bot.drive.client.Credentials.from_service_account_info"), \
+             patch("bot.drive.client.build") as mock_build:
+            mock_build.return_value = mock_service
+            client = DriveClient(SERVICE_ACCOUNT_JSON)
+            return client.list_model_files_recursive(folder_id, **kwargs)
+
+    def test_flat_folder_returns_model_files(self):
+        folder_responses = {
+            "parent": [
+                {"id": "1", "name": "a.stl", "mimeType": "application/octet-stream"},
+                {"id": "2", "name": "b.obj", "mimeType": "application/octet-stream"},
+                {"id": "3", "name": "readme.txt", "mimeType": "text/plain"},
+            ]
+        }
+        result = self._run(folder_responses)
+        assert len(result) == 2
+        names = {f["name"] for f in result}
+        assert names == {"a.stl", "b.obj"}
+
+    def test_one_level_of_subfolders(self):
+        # Spec example: parent has subfolder-A (a.stl, b.stl), subfolder-B (c.stl, d.stl)
+        folder_responses = {
+            "parent": [
+                {"id": "sf-a", "name": "subfolder-A", "mimeType": "application/vnd.google-apps.folder"},
+                {"id": "sf-b", "name": "subfolder-B", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "sf-a": [
+                {"id": "1", "name": "a.stl", "mimeType": "application/octet-stream"},
+                {"id": "2", "name": "b.stl", "mimeType": "application/octet-stream"},
+            ],
+            "sf-b": [
+                {"id": "3", "name": "c.stl", "mimeType": "application/octet-stream"},
+                {"id": "4", "name": "d.stl", "mimeType": "application/octet-stream"},
+            ],
+        }
+        result = self._run(folder_responses, max_depth=2)
+        assert len(result) == 4
+        names = {f["name"] for f in result}
+        assert names == {"a.stl", "b.stl", "c.stl", "d.stl"}
+
+    def test_mixed_files_and_subfolders_at_root(self):
+        # Spec example: parent has root.stl, subfolder-A (a.stl), subfolder-B (b.stl)
+        folder_responses = {
+            "parent": [
+                {"id": "1", "name": "root.stl", "mimeType": "application/octet-stream"},
+                {"id": "sf-a", "name": "subfolder-A", "mimeType": "application/vnd.google-apps.folder"},
+                {"id": "sf-b", "name": "subfolder-B", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "sf-a": [{"id": "2", "name": "a.stl", "mimeType": "application/octet-stream"}],
+            "sf-b": [{"id": "3", "name": "b.stl", "mimeType": "application/octet-stream"}],
+        }
+        result = self._run(folder_responses, max_depth=2)
+        assert len(result) == 3
+        names = {f["name"] for f in result}
+        assert names == {"root.stl", "a.stl", "b.stl"}
+
+    def test_non_model_files_excluded_at_all_levels(self):
+        folder_responses = {
+            "parent": [
+                {"id": "sf-a", "name": "subfolder-A", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "sf-a": [
+                {"id": "1", "name": "model.stl", "mimeType": "application/octet-stream"},
+                {"id": "2", "name": "readme.txt", "mimeType": "text/plain"},
+                {"id": "3", "name": "preview.png", "mimeType": "image/png"},
+            ],
+        }
+        result = self._run(folder_responses, max_depth=2)
+        assert len(result) == 1
+        assert result[0]["name"] == "model.stl"
+
+    def test_depth_limit_prevents_third_level(self):
+        # 3 levels: parent -> child -> grandchild; max_depth=2 blocks grandchild
+        folder_responses = {
+            "parent": [
+                {"id": "child", "name": "child-folder", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "child": [
+                {"id": "grandchild", "name": "grandchild-folder", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "grandchild": [
+                {"id": "1", "name": "deep.stl", "mimeType": "application/octet-stream"},
+            ],
+        }
+        result = self._run(folder_responses, max_depth=2)
+        assert result == []
+
+    def test_depth_limit_emits_warning_log(self):
+        from bot.drive.client import DriveClient
+        folder_responses = {
+            "parent": [
+                {"id": "child", "name": "child-folder", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "child": [
+                {"id": "grandchild", "name": "grandchild-folder", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "grandchild": [],
+        }
+        mock_service = self._make_service_with_folder_responses(folder_responses)
+        with patch("bot.drive.client.Credentials.from_service_account_info"), \
+             patch("bot.drive.client.build") as mock_build, \
+             patch("bot.drive.client.logger") as mock_logger:
+            mock_build.return_value = mock_service
+            client = DriveClient(SERVICE_ACCOUNT_JSON)
+            client.list_model_files_recursive("parent", max_depth=2)
+        mock_logger.warning.assert_called_once()
+        warning_args = str(mock_logger.warning.call_args)
+        assert "grandchild" in warning_args
+
+    def test_empty_subfolder_does_not_cause_error(self):
+        folder_responses = {
+            "parent": [
+                {"id": "empty-sf", "name": "empty-subfolder", "mimeType": "application/vnd.google-apps.folder"},
+                {"id": "nonempty-sf", "name": "nonempty-subfolder", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "empty-sf": [],
+            "nonempty-sf": [
+                {"id": "1", "name": "model.stl", "mimeType": "application/octet-stream"},
+            ],
+        }
+        result = self._run(folder_responses, max_depth=2)
+        assert len(result) == 1
+        assert result[0]["name"] == "model.stl"
+
+    def test_returns_id_and_name_only(self):
+        folder_responses = {
+            "parent": [
+                {"id": "abc", "name": "model.stl", "mimeType": "application/octet-stream"},
+            ]
+        }
+        result = self._run(folder_responses)
+        assert result[0] == {"id": "abc", "name": "model.stl"}
+
+
 class TestUploadFile:
     def test_returns_web_view_link(self, tmp_path):
         from bot.drive.client import DriveClient
