@@ -184,3 +184,29 @@ def test_new_signature_order_status_absent(tmp_path):
     generate_quote_pdf(**NEW_BASE_KWARGS, output_path=output)
     text = _read_pdf_text(output)
     assert "訂單狀態" not in text
+
+
+def test_min_order_supplement_row_shown(tmp_path):
+    from bot.pdf_gen.generator import generate_quote_pdf
+    output = str(tmp_path / "quote_min_order.pdf")
+    generate_quote_pdf(
+        **{**NEW_BASE_KWARGS,
+           "material_cost": 50,
+           "processing_fee": 80,
+           "subtotal": 130,
+           "final_total": 500,
+           "min_order_supplement": 370},
+        output_path=output,
+    )
+    text = _read_pdf_text(output)
+    assert "低消補足" in text
+    assert "NT$ 370" in text
+    assert "NT$ 500" in text
+
+
+def test_no_supplement_row_when_zero(tmp_path):
+    from bot.pdf_gen.generator import generate_quote_pdf
+    output = str(tmp_path / "quote_no_supplement.pdf")
+    generate_quote_pdf(**NEW_BASE_KWARGS, output_path=output)
+    text = _read_pdf_text(output)
+    assert "低消補足" not in text

@@ -43,7 +43,7 @@ class QuoteResult:
 
 def calculate_material_cost(resin: ResinType, volume_ml: float, colored: bool) -> int:
     coefficient = _RESIN_COEFFICIENT[(resin, colored)]
-    return int(math.ceil(volume_ml) * coefficient)
+    return math.ceil(volume_ml * coefficient)
 
 
 def calculate_processing_fee(body_count: int) -> int:

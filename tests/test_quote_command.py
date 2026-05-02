@@ -434,6 +434,7 @@ def _make_view_stub(db: DBClient):
     stub._shipping_address = ""
     stub._shipping_free_label = False
     stub._compute_final_total = MagicMock(return_value=560)
+    stub._compute_raw_total = MagicMock(return_value=560)
     stub._config = MagicMock()
     stub._config.google_service_account_json = '{"type": "service_account"}'
     return stub
@@ -518,7 +519,7 @@ class TestDoReject:
         QuoteActionView._do_reject(stub)
 
         quote_records = db.get_unsynced_quote_records()
-        assert quote_records[0]["file_details_text"] == "model.stl: 3.50ml / 5件"
+        assert quote_records[0]["file_details_text"] == "model.stl: 3.5ml / 5件"
 
     def test_empty_rejection_reason_stored_as_empty_string(self, tmp_path):
         from bot.commands.quote import QuoteActionView
@@ -687,7 +688,7 @@ class TestFormatFileDetails:
     def test_single_file(self):
         from bot.commands.quote import _format_file_details
         result = _format_file_details([{"filename": "model.stl", "volume_ml": 3.5, "body_count": 5}])
-        assert result == "model.stl: 3.50ml / 5件"
+        assert result == "model.stl: 3.5ml / 5件"
 
     def test_multiple_files(self):
         from bot.commands.quote import _format_file_details
@@ -696,7 +697,7 @@ class TestFormatFileDetails:
             {"filename": "b.obj", "volume_ml": 1.5, "body_count": 2},
         ]
         result = _format_file_details(details)
-        assert result == "a.stl: 2.00ml / 3件\nb.obj: 1.50ml / 2件"
+        assert result == "a.stl: 2.0ml / 3件\nb.obj: 1.5ml / 2件"
 
     def test_empty_list(self):
         from bot.commands.quote import _format_file_details
@@ -1022,3 +1023,23 @@ class TestQuoteActionViewFinalTotal:
         view._manual_discount_amount = 100
         view._shipping_fee = 60
         assert view._compute_final_total() == 960
+
+    @pytest.mark.asyncio
+    async def test_min_order_supplement_applied(self, tmp_path):
+        view = _make_full_action_view(tmp_path, auto_discounted_total=300)
+        view._quote_result.order_status = "未達低消"
+        assert view._compute_min_order_supplement() == 200
+        assert view._compute_final_total() == 500
+
+    @pytest.mark.asyncio
+    async def test_min_order_supplement_zero_when_normal(self, tmp_path):
+        view = _make_full_action_view(tmp_path, auto_discounted_total=1000)
+        assert view._compute_min_order_supplement() == 0
+        assert view._compute_final_total() == 1000
+
+    @pytest.mark.asyncio
+    async def test_min_order_no_supplement_when_already_500(self, tmp_path):
+        view = _make_full_action_view(tmp_path, auto_discounted_total=500)
+        view._quote_result.order_status = "未達低消"
+        assert view._compute_min_order_supplement() == 0
+        assert view._compute_final_total() == 500

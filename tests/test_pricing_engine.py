@@ -19,8 +19,8 @@ class TestCalculateMaterialCost:
         assert calculate_material_cost(ResinType.RPG, 10.0, colored=False) == 35
 
     def test_rpg_decimal_volume_ceil(self):
-        # ceil(10.1) = 11, int(11 * 3.5) = int(38.5) = 38
-        assert calculate_material_cost(ResinType.RPG, 10.1, colored=False) == 38
+        # ceil(10.1 * 3.5) = ceil(35.35) = 36
+        assert calculate_material_cost(ResinType.RPG, 10.1, colored=False) == 36
 
     def test_clear_not_colored(self):
         assert calculate_material_cost(ResinType.CLEAR, 10.0, colored=False) == 35
@@ -30,8 +30,8 @@ class TestCalculateMaterialCost:
         assert calculate_material_cost(ResinType.CLEAR, 10.0, colored=True) == 70
 
     def test_clear_colored_decimal_volume(self):
-        # ceil(10.1) = 11, int(11 * 7.0) = 77
-        assert calculate_material_cost(ResinType.CLEAR, 10.1, colored=True) == 77
+        # ceil(10.1 * 7.0) = ceil(70.7) = 71
+        assert calculate_material_cost(ResinType.CLEAR, 10.1, colored=True) == 71
 
 
 # ── 加工費 ────────────────────────────────────────────────────────────────────

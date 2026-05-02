@@ -58,7 +58,7 @@ def _format_file_details(file_details: list[dict]) -> str:
     if not file_details:
         return ""
     lines = [
-        f"{f['filename']}: {f['volume_ml']:.2f}ml / {f['body_count']}件"
+        f"{f['filename']}: {f['volume_ml']:.1f}ml / {f['body_count']}件"
         for f in file_details
     ]
     return "\n".join(lines)
@@ -85,6 +85,7 @@ def _build_quote_embed(
     file_details: list[dict],
     error_files: list[str],
     manual_discount_amount: int = 0,
+    min_order_supplement: int = 0,
     shipping_fee: int = 0,
     shipping_address: str = "",
     shipping_free_label: bool = False,
@@ -109,6 +110,13 @@ def _build_quote_embed(
             parts.append(f"手動 -${manual_discount_amount}")
         embed.add_field(name="折扣", value=" / ".join(parts), inline=False)
 
+    if min_order_supplement > 0:
+        embed.add_field(
+            name="⚠️ 低消補足",
+            value=f"+${min_order_supplement}（補足至低消 NT$ 500）",
+            inline=False,
+        )
+
     if shipping_address:
         ship_val = "免運費" if shipping_free_label else f"NT$ {shipping_fee:,}"
         embed.add_field(name="運費", value=ship_val, inline=True)
@@ -127,7 +135,7 @@ def _build_quote_embed(
     shown = file_details[:10]
     if shown:
         lines = [
-            f"`{f['filename']}` — {f['volume_ml']:.2f} ml，{f['body_count']} 件"
+            f"`{f['filename']}` — {f['volume_ml']:.1f} ml，{f['body_count']} 件"
             for f in shown
         ]
         if len(file_details) > 10:
@@ -476,12 +484,24 @@ class QuoteActionView(discord.ui.View):
         self._shipping_free_label: bool = False
         self._message: discord.Message | None = None
 
-    def _compute_final_total(self) -> int:
+    def _compute_raw_total(self) -> int:
         return self._quote_result.final_total - self._manual_discount_amount + self._shipping_fee
+
+    def _compute_min_order_supplement(self) -> int:
+        if self._quote_result.order_status != "未達低消":
+            return 0
+        return max(0, 500 - self._compute_raw_total())
+
+    def _compute_final_total(self) -> int:
+        raw = self._compute_raw_total()
+        if self._quote_result.order_status == "未達低消":
+            return max(500, raw)
+        return raw
 
     async def _refresh_embed(self) -> None:
         qr = self._quote_result
         final_total = self._compute_final_total()
+        supplement = self._compute_min_order_supplement()
         embed = _build_quote_embed(
             customer_name=self._modal_data.customer_name,
             resin_label=self._resin_label,
@@ -495,6 +515,7 @@ class QuoteActionView(discord.ui.View):
             file_details=self._file_details,
             error_files=self._error_files,
             manual_discount_amount=self._manual_discount_amount,
+            min_order_supplement=supplement,
             shipping_fee=self._shipping_fee,
             shipping_address=self._shipping_address,
             shipping_free_label=self._shipping_free_label,
@@ -563,6 +584,7 @@ class QuoteActionView(discord.ui.View):
         md = self._modal_data
         qr = self._quote_result
         final_total = self._compute_final_total()
+        supplement = self._compute_min_order_supplement()
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = os.path.join(tmp, f"{quote_number}.pdf")
             generate_quote_pdf(
@@ -576,6 +598,7 @@ class QuoteActionView(discord.ui.View):
                 subtotal=qr.subtotal,
                 auto_discount_amount=qr.auto_discount_amount,
                 manual_discount_amount=self._manual_discount_amount,
+                min_order_supplement=supplement,
                 final_total=final_total,
                 shipping_fee=self._shipping_fee,
                 shipping_address=self._shipping_address,
@@ -620,7 +643,7 @@ class QuoteActionView(discord.ui.View):
     def _do_reject(self, rejection_reason: str = "") -> None:
         md = self._modal_data
         qr = self._quote_result
-        final_total = self._compute_final_total()
+        final_total = self._compute_raw_total()
         file_details_text = _format_file_details(self._file_details)
         manual_discount_str = f"- NT$ {self._manual_discount_amount:,}" if self._manual_discount_amount > 0 else "無"
 
@@ -691,6 +714,12 @@ class QuoteCog(commands.Cog):
             )
             return
 
+        initial_supplement = (
+            max(0, 500 - quote_result.final_total)
+            if quote_result.order_status == "未達低消"
+            else 0
+        )
+        initial_total = max(500, quote_result.final_total) if initial_supplement > 0 else quote_result.final_total
         embed = _build_quote_embed(
             customer_name=modal_data.customer_name,
             resin_label=resin_label,
@@ -699,10 +728,11 @@ class QuoteCog(commands.Cog):
             processing_fee=quote_result.processing_fee,
             subtotal=quote_result.subtotal,
             auto_discount_amount=quote_result.auto_discount_amount,
-            final_total=quote_result.final_total,
+            final_total=initial_total,
             order_status=quote_result.order_status,
             file_details=file_details,
             error_files=error_files,
+            min_order_supplement=initial_supplement,
         )
         view = QuoteActionView(
             modal_data=modal_data,

@@ -192,6 +192,7 @@ def generate_quote_pdf(
     subtotal: int,
     auto_discount_amount: int,
     manual_discount_amount: int = 0,
+    min_order_supplement: int = 0,
     final_total: int = 0,
     shipping_fee: int = 0,
     shipping_address: str = "",
@@ -223,7 +224,7 @@ def generate_quote_pdf(
             f"日期：{date.today().isoformat()}",
             f"樹脂種類：{resin_label}",
             f"物件總件數：{total_body_count} 件",
-            f"樹脂體積總計：{total_volume_ml:.2f} ml",
+            f"樹脂體積總計：{total_volume_ml:.1f} ml",
         ]
         if shipping_address:
             spec_bullets.append(f"寄送地址：{shipping_address}")
@@ -235,7 +236,7 @@ def generate_quote_pdf(
         # 檔案明細表
         detail_data = [["檔名", "體積 (ml)", "件數"]]
         for f in file_details:
-            detail_data.append([f["filename"], f"{f['volume_ml']:.4f}", str(f["body_count"])])
+            detail_data.append([f["filename"], f"{f['volume_ml']:.1f}", str(f["body_count"])])
 
         detail_table = Table(detail_data, colWidths=[100 * mm, 40 * mm, 25 * mm])
         detail_table.setStyle(TableStyle([
@@ -263,6 +264,8 @@ def generate_quote_pdf(
             cost_data.append(["固定折扣 (95折)", f"- NT$ {auto_discount_amount:,}"])
         if manual_discount_amount > 0:
             cost_data.append(["折扣", f"- NT$ {manual_discount_amount:,}"])
+        if min_order_supplement > 0:
+            cost_data.append(["低消補足", f"+ NT$ {min_order_supplement:,}"])
         if shipping_address:
             ship_val = "免運費" if shipping_free_label else f"NT$ {shipping_fee:,}"
             cost_data.append(["運費", ship_val])
