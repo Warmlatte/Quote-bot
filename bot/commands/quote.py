@@ -580,7 +580,9 @@ class QuoteCog(commands.Cog):
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
             for f in model_files:
-                dest = os.path.join(tmp, f["name"])
+                file_dir = os.path.join(tmp, f["id"])
+                os.makedirs(file_dir, exist_ok=True)
+                dest = os.path.join(file_dir, f["name"])
                 drive.download_file(f["id"], dest)
                 paths.append(dest)
 

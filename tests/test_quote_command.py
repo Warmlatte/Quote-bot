@@ -597,6 +597,29 @@ class TestSyncCalculateUsesRecursiveListing:
             QuoteCog._sync_calculate(self._make_cog(), self._make_modal_data(), ResinType.RPG, False)
         assert mock_drive.download_file.call_count == 2
 
+    def test_same_filename_different_subfolders_use_unique_paths(self):
+        """同名檔案來自不同子資料夾時，下載路徑必須不同（以 file ID 為子目錄）。"""
+        from bot.commands.quote import ResinType, QuoteCog
+        mock_drive = MagicMock()
+        mock_drive.list_model_files_recursive.return_value = [
+            {"id": "id_alpha", "name": "model.stl"},
+            {"id": "id_beta", "name": "model.stl"},
+        ]
+        downloaded_paths: list[str] = []
+        mock_drive.download_file.side_effect = lambda _, dest: downloaded_paths.append(dest)
+        mock_result = MagicMock()
+        mock_result.volume_ml = 2.0
+        mock_result.body_count = 1
+        mock_result.filename = "model.stl"
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
+             patch("bot.commands.quote.read_models", new_callable=AsyncMock,
+                   return_value=([mock_result], [])):
+            QuoteCog._sync_calculate(self._make_cog(), self._make_modal_data(), ResinType.RPG, False)
+        assert len(downloaded_paths) == 2
+        assert downloaded_paths[0] != downloaded_paths[1]
+        assert "id_alpha" in downloaded_paths[0]
+        assert "id_beta" in downloaded_paths[1]
+
 
 class TestFormatFileDetails:
     def test_single_file(self):

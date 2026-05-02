@@ -46,7 +46,7 @@ class DriveClient:
         ]
 
     def list_model_files_recursive(
-        self, folder_id: str, max_depth: int = 2
+        self, folder_id: str, max_depth: int = 5
     ) -> list[dict]:
         return self._scan_folder(folder_id, 0, max_depth)
 
@@ -54,33 +54,40 @@ class DriveClient:
         self, folder_id: str, current_depth: int, max_depth: int
     ) -> list[dict]:
         query = f"'{folder_id}' in parents and trashed = false"
-        response = (
-            self._service.files()
-            .list(
+        results: list[dict] = []
+        page_token: str | None = None
+
+        while True:
+            kwargs: dict = dict(
                 q=query,
-                fields="files(id, name, mimeType)",
+                fields="nextPageToken, files(id, name, mimeType)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
             )
-            .execute()
-        )
-        results: list[dict] = []
-        for item in response.get("files", []):
-            if item["mimeType"] == _FOLDER_MIME:
-                if current_depth + 1 >= max_depth:
-                    logger.warning(
-                        "Skipping subfolder '%s' (id=%s): max_depth=%d reached",
-                        item["name"],
-                        item["id"],
-                        max_depth,
-                    )
-                else:
-                    results.extend(
-                        self._scan_folder(item["id"], current_depth + 1, max_depth)
-                    )
-            else:
-                if os.path.splitext(item["name"])[1].lower() in _MODEL_EXTS:
+            if page_token:
+                kwargs["pageToken"] = page_token
+            response = self._service.files().list(**kwargs).execute()
+
+            for item in response.get("files", []):
+                if item["mimeType"] == _FOLDER_MIME:
+                    if current_depth + 1 >= max_depth:
+                        logger.warning(
+                            "Skipping subfolder '%s' (id=%s): max_depth=%d reached",
+                            item["name"],
+                            item["id"],
+                            max_depth,
+                        )
+                    else:
+                        results.extend(
+                            self._scan_folder(item["id"], current_depth + 1, max_depth)
+                        )
+                elif os.path.splitext(item["name"])[1].lower() in _MODEL_EXTS:
                     results.append({"id": item["id"], "name": item["name"]})
+
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
         return results
 
     def download_file(self, file_id: str, dest_path: str) -> str:

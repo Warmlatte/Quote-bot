@@ -275,6 +275,55 @@ class TestListModelFilesRecursive:
         result = self._run(folder_responses)
         assert result[0] == {"id": "abc", "name": "model.stl"}
 
+    def test_default_max_depth_allows_three_levels(self):
+        """Default max_depth=5 allows 3-level nesting that was blocked with old max_depth=2."""
+        folder_responses = {
+            "parent": [
+                {"id": "child", "name": "child-folder", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "child": [
+                {"id": "grandchild", "name": "grandchild-folder", "mimeType": "application/vnd.google-apps.folder"},
+            ],
+            "grandchild": [
+                {"id": "1", "name": "deep.stl", "mimeType": "application/octet-stream"},
+            ],
+        }
+        result = self._run(folder_responses)  # default max_depth=5
+        assert len(result) == 1
+        assert result[0]["name"] == "deep.stl"
+
+    def test_pagination_follows_next_page_token(self):
+        """_scan_folder follows nextPageToken to retrieve all files beyond page 1."""
+        from bot.drive.client import DriveClient
+
+        mock_service = MagicMock()
+        call_count = {"n": 0}
+
+        def list_side_effect(**kwargs):
+            result_mock = MagicMock()
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                result_mock.execute.return_value = {
+                    "files": [{"id": "1", "name": "page1.stl", "mimeType": "application/octet-stream"}],
+                    "nextPageToken": "token123",
+                }
+            else:
+                result_mock.execute.return_value = {
+                    "files": [{"id": "2", "name": "page2.stl", "mimeType": "application/octet-stream"}],
+                }
+            return result_mock
+
+        mock_service.files.return_value.list.side_effect = list_side_effect
+
+        with patch("bot.drive.client.Credentials.from_service_account_info"), \
+             patch("bot.drive.client.build") as mock_build:
+            mock_build.return_value = mock_service
+            client = DriveClient(SERVICE_ACCOUNT_JSON)
+            result = client.list_model_files_recursive("folder123")
+
+        assert len(result) == 2
+        assert {f["name"] for f in result} == {"page1.stl", "page2.stl"}
+
 
 class TestUploadFile:
     def test_returns_web_view_link(self, tmp_path):
