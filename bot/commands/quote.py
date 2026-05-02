@@ -272,69 +272,175 @@ class ResinSelectView(discord.ui.View):
         )
 
 
-class DiscountView(discord.ui.View):
+class DiscountCustomModal(discord.ui.Modal, title="自訂折扣"):
+    discount_input = discord.ui.TextInput(
+        label="折扣（百分比如 80% 或固定金額如 -100）",
+        max_length=20,
+        placeholder='例：80% 或 -100',
+    )
+
+    def __init__(self, action_view: "QuoteActionView") -> None:
+        super().__init__()
+        self._action_view = action_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = (self.discount_input.value or "").strip()
+        av = self._action_view
+        if raw.endswith("%"):
+            try:
+                pct = float(raw[:-1]) / 100
+                if not (0 < pct < 1):
+                    raise ValueError()
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ 無效的百分比，請輸入如 80% 的格式（1%–99%）。", ephemeral=True
+                )
+                return
+            discount = DiscountInput(mode="pct", value=pct)
+        elif raw.startswith("-"):
+            try:
+                amount = int(raw[1:])
+                if amount <= 0:
+                    raise ValueError()
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ 無效的固定金額，請輸入如 -100 的格式（負整數）。", ephemeral=True
+                )
+                return
+            discount = DiscountInput(mode="fixed", value=amount)
+        else:
+            await interaction.response.send_message(
+                "❌ 無法辨識格式，請使用 80% 或 -100。", ephemeral=True
+            )
+            return
+
+        _, discount_amount = apply_manual_discount(av._quote_result.final_total, discount)
+        av._manual_discount = discount
+        av._manual_discount_amount = discount_amount
+        await interaction.response.defer()
+        await av._refresh_embed()
+
+
+class DiscountSelectView(discord.ui.View):
     def __init__(self, action_view: "QuoteActionView") -> None:
         super().__init__(timeout=300)
         self._action_view = action_view
-        self._nine_ten = False
-        self._free_ship = False
 
-    @discord.ui.button(label="九折", style=discord.ButtonStyle.secondary)
-    async def toggle_nine_ten(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        self._nine_ten = not self._nine_ten
-        button.style = (
-            discord.ButtonStyle.success if self._nine_ten else discord.ButtonStyle.secondary
+        select = discord.ui.Select(
+            placeholder="選擇折扣選項...",
+            options=[
+                discord.SelectOption(label="九折", value="九折", description="套用 90% 折扣"),
+                discord.SelectOption(label="自訂", value="自訂", description="輸入百分比或固定金額"),
+                discord.SelectOption(label="清除折扣", value="清除折扣", description="移除手動折扣"),
+            ],
         )
-        await interaction.response.edit_message(view=self)
+        select.callback = self._on_select
+        self.add_item(select)
 
-    @discord.ui.button(label="免運費", style=discord.ButtonStyle.secondary)
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        from typing import Any, cast
+        value = cast(Any, interaction.data)["values"][0]
+        av = self._action_view
+
+        if value == "九折":
+            discount = DiscountInput(mode="pct", value=0.9)
+            _, amount = apply_manual_discount(av._quote_result.final_total, discount)
+            av._manual_discount = discount
+            av._manual_discount_amount = amount
+            await interaction.response.defer()
+            await av._refresh_embed()
+        elif value == "清除折扣":
+            av._manual_discount = DiscountInput(mode="none", value=0)
+            av._manual_discount_amount = 0
+            await interaction.response.defer()
+            await av._refresh_embed()
+        else:
+            await interaction.response.send_modal(DiscountCustomModal(av))
+
+
+class ShippingModal(discord.ui.Modal, title="運送資訊"):
+    def __init__(self, action_view: "QuoteActionView", fee_default: int = 60, free_toggled: bool = False) -> None:
+        super().__init__()
+        self._action_view = action_view
+        self._free_toggled = free_toggled
+
+        self.address_field = discord.ui.TextInput(
+            label="寄送地址",
+            required=True,
+            max_length=200,
+            placeholder="例：台北市大安區忠孝東路四段",
+        )
+        self.fee_field = discord.ui.TextInput(
+            label="運費金額",
+            required=True,
+            max_length=10,
+            default=str(fee_default),
+        )
+        self.add_item(self.address_field)
+        self.add_item(self.fee_field)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        fee_raw = (self.fee_field.value or "").strip()
+        try:
+            fee = int(fee_raw)
+            if fee < 0:
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ 無效的運費金額，請輸入非負整數（如 0 或 60）。", ephemeral=True
+            )
+            return
+
+        av = self._action_view
+        av._shipping_fee = fee
+        av._shipping_address = (self.address_field.value or "").strip()
+        av._shipping_free_label = self._free_toggled and fee == 0
+        await interaction.response.defer()
+        await av._refresh_embed()
+
+
+class ShippingView(discord.ui.View):
+    def __init__(self, action_view: "QuoteActionView") -> None:
+        super().__init__(timeout=300)
+        self._action_view = action_view
+        self._free_active: bool = action_view._quote_result.auto_free_ship
+        self._toggle_btn: discord.ui.Button | None = None
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.label == "🆓 免運費":
+                self._toggle_btn = item
+                item.style = (
+                    discord.ButtonStyle.success if self._free_active else discord.ButtonStyle.secondary
+                )
+                break
+
     async def toggle_free_ship(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        self._free_ship = not self._free_ship
+        self._free_active = not self._free_active
         button.style = (
-            discord.ButtonStyle.success if self._free_ship else discord.ButtonStyle.secondary
+            discord.ButtonStyle.success if self._free_active else discord.ButtonStyle.secondary
         )
         await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="套用折扣", style=discord.ButtonStyle.primary, row=1)
-    async def apply_discount(
+    async def fill_address(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        av = self._action_view
-        base = av._quote_result.final_total
-
-        discount = DiscountInput(mode="pct", value=0.9) if self._nine_ten else DiscountInput(mode="none", value=0)
-        new_total, _ = apply_manual_discount(base, discount)
-        av._final_total = new_total
-        av._final_free_shipping = av._quote_result.auto_free_ship or self._free_ship
-        av._manual_nine_ten = self._nine_ten
-        av._manual_free_ship = self._free_ship
-
-        parts = []
-        if self._nine_ten:
-            parts.append("九折")
-        if self._free_ship or av._final_free_shipping:
-            parts.append("免運費")
-        manual_discount_str = " + ".join(parts) if parts else "無"
-
-        embed = _build_quote_embed(
-            customer_name=av._modal_data.customer_name,
-            resin_label=av._resin_label,
-            body_count=av._quote_result.body_count,
-            material_cost=av._quote_result.material_cost,
-            processing_fee=av._quote_result.processing_fee,
-            subtotal=av._quote_result.subtotal,
-            auto_discount_amount=av._quote_result.auto_discount_amount,
-            manual_discount=manual_discount_str,
-            final_total=new_total,
-            order_status=av._quote_result.order_status,
-            file_details=av._file_details,
-            error_files=av._error_files,
+        fee_default = 0 if self._free_active else 60
+        await interaction.response.send_modal(
+            ShippingModal(self._action_view, fee_default=fee_default, free_toggled=self._free_active)
         )
-        await interaction.response.edit_message(embed=embed, view=av)
+
+    @discord.ui.button(label="🆓 免運費", style=discord.ButtonStyle.secondary, row=0)
+    async def _toggle_free_ship_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.toggle_free_ship(interaction, button)
+
+    @discord.ui.button(label="📝 填寫地址與運費", style=discord.ButtonStyle.primary, row=1)
+    async def _fill_address_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.fill_address(interaction, button)
 
 
 class QuoteActionView(discord.ui.View):
@@ -361,16 +467,25 @@ class QuoteActionView(discord.ui.View):
         self._manual_nine_ten = False
         self._manual_free_ship = False
 
-    @discord.ui.button(label="✏️ 套用折扣", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="✏️ 折扣", style=discord.ButtonStyle.secondary, row=0)
     async def discount_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        view = DiscountView(action_view=self)
-        await interaction.response.edit_message(
-            content="選擇折扣選項：", view=view
+        view = DiscountSelectView(action_view=self)
+        await interaction.response.send_message(
+            "選擇折扣選項：", view=view, ephemeral=True
         )
 
-    @discord.ui.button(label="✅ 接受報價", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🚚 運送", style=discord.ButtonStyle.secondary, row=0)
+    async def shipping_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        view = ShippingView(action_view=self)
+        await interaction.response.send_message(
+            "設定運送選項：", view=view, ephemeral=True
+        )
+
+    @discord.ui.button(label="✅ 接受報價", style=discord.ButtonStyle.success, row=1)
     async def accept_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -401,7 +516,7 @@ class QuoteActionView(discord.ui.View):
         except Exception as exc:
             await interaction.followup.send(f"⚠️ 報價已接受但記錄寫入失敗：{exc}", ephemeral=True)
 
-    @discord.ui.button(label="❌ 拒絕報價", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ 拒絕報價", style=discord.ButtonStyle.danger, row=1)
     async def reject_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:

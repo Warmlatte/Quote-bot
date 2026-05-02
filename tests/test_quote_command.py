@@ -700,3 +700,257 @@ class TestFormatFileDetails:
     def test_empty_list(self):
         from bot.commands.quote import _format_file_details
         assert _format_file_details([]) == ""
+
+
+# ---------------------------------------------------------------------------
+# DiscountSelectView & DiscountCustomModal
+# ---------------------------------------------------------------------------
+
+def _make_action_view_for_discount(auto_discounted_total: int = 1000, auto_free_ship: bool = False):
+    """Return a minimal stub that DiscountSelectView / DiscountCustomModal can call."""
+    from bot.pricing.engine import DiscountInput
+    stub = MagicMock()
+    qr = MagicMock()
+    qr.final_total = auto_discounted_total
+    qr.auto_free_ship = auto_free_ship
+    stub._quote_result = qr
+    stub._manual_discount = DiscountInput(mode="none", value=0)
+    stub._manual_discount_amount = 0
+    stub._refresh_embed = AsyncMock()
+    return stub
+
+
+class TestDiscountCustomModal:
+    @pytest.mark.asyncio
+    async def test_percentage_80_parsed_correctly(self):
+        from bot.commands.quote import DiscountCustomModal
+        from bot.pricing.engine import DiscountInput
+        action_view = _make_action_view_for_discount(1000)
+        modal = DiscountCustomModal(action_view)
+        modal.discount_input = MagicMock()
+        modal.discount_input.value = "80%"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        interaction.followup = AsyncMock()
+        await modal.on_submit(interaction)
+        assert action_view._manual_discount == DiscountInput(mode="pct", value=0.80)
+        action_view._refresh_embed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fixed_minus100_parsed_correctly(self):
+        from bot.commands.quote import DiscountCustomModal
+        from bot.pricing.engine import DiscountInput
+        action_view = _make_action_view_for_discount(1000)
+        modal = DiscountCustomModal(action_view)
+        modal.discount_input = MagicMock()
+        modal.discount_input.value = "-100"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        interaction.followup = AsyncMock()
+        await modal.on_submit(interaction)
+        assert action_view._manual_discount == DiscountInput(mode="fixed", value=100)
+        action_view._refresh_embed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_invalid_input_sends_ephemeral_error(self):
+        from bot.commands.quote import DiscountCustomModal
+        action_view = _make_action_view_for_discount(1000)
+        modal = DiscountCustomModal(action_view)
+        modal.discount_input = MagicMock()
+        modal.discount_input.value = "abc"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        interaction.followup = AsyncMock()
+        await modal.on_submit(interaction)
+        action_view._refresh_embed.assert_not_called()
+        assert action_view._manual_discount_amount == 0
+
+    @pytest.mark.asyncio
+    async def test_final_total_updates_after_percentage_discount(self):
+        from bot.commands.quote import DiscountCustomModal
+        import math
+        action_view = _make_action_view_for_discount(1000)
+        modal = DiscountCustomModal(action_view)
+        modal.discount_input = MagicMock()
+        modal.discount_input.value = "80%"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        interaction.followup = AsyncMock()
+        await modal.on_submit(interaction)
+        assert action_view._manual_discount_amount == 1000 - math.floor(1000 * 0.8)
+
+
+class TestDiscountSelectView:
+    @pytest.mark.asyncio
+    async def test_nine_ten_applies_discount_and_refreshes(self):
+        from bot.commands.quote import DiscountSelectView
+        from bot.pricing.engine import DiscountInput
+        action_view = _make_action_view_for_discount(1000)
+        view = DiscountSelectView(action_view)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.data = {"values": ["九折"]}
+        interaction.response = AsyncMock()
+        await view._on_select(interaction)
+        assert action_view._manual_discount == DiscountInput(mode="pct", value=0.9)
+        action_view._refresh_embed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_clear_discount_resets_and_refreshes(self):
+        from bot.commands.quote import DiscountSelectView
+        from bot.pricing.engine import DiscountInput
+        action_view = _make_action_view_for_discount(1000)
+        action_view._manual_discount = DiscountInput(mode="pct", value=0.9)
+        action_view._manual_discount_amount = 100
+        view = DiscountSelectView(action_view)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.data = {"values": ["清除折扣"]}
+        interaction.response = AsyncMock()
+        await view._on_select(interaction)
+        assert action_view._manual_discount == DiscountInput(mode="none", value=0)
+        assert action_view._manual_discount_amount == 0
+        action_view._refresh_embed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_custom_opens_modal(self):
+        from bot.commands.quote import DiscountSelectView
+        action_view = _make_action_view_for_discount(1000)
+        view = DiscountSelectView(action_view)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.data = {"values": ["自訂"]}
+        interaction.response = AsyncMock()
+        await view._on_select(interaction)
+        interaction.response.send_modal.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# ShippingView & ShippingModal
+# ---------------------------------------------------------------------------
+
+def _make_action_view_for_shipping(auto_free_ship: bool = False):
+    """Return a minimal stub for ShippingView / ShippingModal tests."""
+    stub = MagicMock()
+    qr = MagicMock()
+    qr.auto_free_ship = auto_free_ship
+    stub._quote_result = qr
+    stub._shipping_fee = 0
+    stub._shipping_address = ""
+    stub._shipping_free_label = False
+    stub._refresh_embed = AsyncMock()
+    return stub
+
+
+class TestShippingView:
+    @pytest.mark.asyncio
+    async def test_init_with_auto_free_ship_true_sets_toggle_active(self):
+        from bot.commands.quote import ShippingView
+        action_view = _make_action_view_for_shipping(auto_free_ship=True)
+        view = ShippingView(action_view)
+        assert view._free_active is True
+
+    @pytest.mark.asyncio
+    async def test_init_without_free_ship_toggle_inactive(self):
+        from bot.commands.quote import ShippingView
+        action_view = _make_action_view_for_shipping(auto_free_ship=False)
+        view = ShippingView(action_view)
+        assert view._free_active is False
+
+    @pytest.mark.asyncio
+    async def test_toggle_free_ship_flips_state(self):
+        from bot.commands.quote import ShippingView
+        action_view = _make_action_view_for_shipping(auto_free_ship=False)
+        view = ShippingView(action_view)
+        assert view._free_active is False
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        button = MagicMock(spec=discord.ui.Button)
+        await view.toggle_free_ship(interaction, button)
+        assert view._free_active is True
+
+    @pytest.mark.asyncio
+    async def test_fill_address_opens_modal_with_fee_60_when_not_free(self):
+        from bot.commands.quote import ShippingView
+        action_view = _make_action_view_for_shipping(auto_free_ship=False)
+        view = ShippingView(action_view)
+        view._free_active = False
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        button = MagicMock(spec=discord.ui.Button)
+        await view.fill_address(interaction, button)
+        interaction.response.send_modal.assert_called_once()
+        modal_arg = interaction.response.send_modal.call_args[0][0]
+        assert modal_arg.fee_field.default == "60"
+
+    @pytest.mark.asyncio
+    async def test_fill_address_opens_modal_with_fee_0_when_free(self):
+        from bot.commands.quote import ShippingView
+        action_view = _make_action_view_for_shipping(auto_free_ship=False)
+        view = ShippingView(action_view)
+        view._free_active = True
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        button = MagicMock(spec=discord.ui.Button)
+        await view.fill_address(interaction, button)
+        modal_arg = interaction.response.send_modal.call_args[0][0]
+        assert modal_arg.fee_field.default == "0"
+
+
+class TestShippingModal:
+    @pytest.mark.asyncio
+    async def test_valid_address_and_fee_updates_state(self):
+        from bot.commands.quote import ShippingModal
+        action_view = _make_action_view_for_shipping()
+        modal = ShippingModal(action_view, fee_default=60, free_toggled=False)
+        modal.address_field = MagicMock()
+        modal.address_field.value = "台北市大安區"
+        modal.fee_field = MagicMock()
+        modal.fee_field.value = "60"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        assert action_view._shipping_fee == 60
+        assert action_view._shipping_address == "台北市大安區"
+        action_view._refresh_embed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fee_0_with_free_toggled_sets_free_label(self):
+        from bot.commands.quote import ShippingModal
+        action_view = _make_action_view_for_shipping()
+        modal = ShippingModal(action_view, fee_default=0, free_toggled=True)
+        modal.address_field = MagicMock()
+        modal.address_field.value = "台北市大安區"
+        modal.fee_field = MagicMock()
+        modal.fee_field.value = "0"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        assert action_view._shipping_free_label is True
+        assert action_view._shipping_fee == 0
+
+    @pytest.mark.asyncio
+    async def test_invalid_fee_sends_ephemeral_error(self):
+        from bot.commands.quote import ShippingModal
+        action_view = _make_action_view_for_shipping()
+        modal = ShippingModal(action_view, fee_default=60, free_toggled=False)
+        modal.address_field = MagicMock()
+        modal.address_field.value = "台北市大安區"
+        modal.fee_field = MagicMock()
+        modal.fee_field.value = "abc"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        action_view._refresh_embed.assert_not_called()
+        assert action_view._shipping_address == ""
+
+    @pytest.mark.asyncio
+    async def test_fee_field_default_is_60_when_not_free(self):
+        from bot.commands.quote import ShippingModal
+        action_view = _make_action_view_for_shipping()
+        modal = ShippingModal(action_view, fee_default=60, free_toggled=False)
+        assert modal.fee_field.default == "60"
+
+    @pytest.mark.asyncio
+    async def test_fee_field_default_is_0_when_auto_free(self):
+        from bot.commands.quote import ShippingModal
+        action_view = _make_action_view_for_shipping(auto_free_ship=True)
+        modal = ShippingModal(action_view, fee_default=0, free_toggled=False)
+        assert modal.fee_field.default == "0"
