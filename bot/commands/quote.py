@@ -5,6 +5,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import discord
 from discord import app_commands
@@ -17,7 +18,7 @@ _logger = logging.getLogger(__name__)
 _TZ_TAIPEI = timezone(timedelta(hours=8))
 from bot.drive.client import DriveClient, extract_folder_id
 from bot.pdf_gen.generator import generate_quote_pdf
-from bot.pricing.engine import ResinType, apply_manual_discounts, calculate_quote
+from bot.pricing.engine import QuoteResult, ResinType, apply_manual_discounts, calculate_quote
 from bot.pricing.model_reader import read_models
 from bot.sheets.client import SheetsClient
 
@@ -68,7 +69,7 @@ def _guild_check(interaction: discord.Interaction, guild_id: int) -> bool:
 
 
 def _role_check(interaction: discord.Interaction, role_id: int) -> bool:
-    return any(r.id == role_id for r in interaction.user.roles)
+    return any(r.id == role_id for r in cast(discord.Member, interaction.user).roles)
 
 
 def _build_quote_embed(
@@ -223,7 +224,7 @@ class ResinSelectView(discord.ui.View):
         )
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
-        self._selected_resin = ResinType(interaction.data["values"][0])
+        self._selected_resin = ResinType(cast(Any, interaction.data)["values"][0])
         self._colored = False
         if self._colored_btn is not None:
             self._colored_btn.disabled = self._selected_resin != ResinType.CLEAR
@@ -394,6 +395,7 @@ class QuoteActionView(discord.ui.View):
                 io.BytesIO(pdf_bytes),
                 filename=f"{quote_number}.pdf",
             ),
+            wait=True,
         )
         pdf_url = msg.attachments[0].url if msg.attachments else "Discord 附件"
         try:
@@ -564,14 +566,14 @@ class QuoteCog(commands.Cog):
             db=self._db,
         )
         await interaction.edit_original_response(content="✅ 估價已發布至頻道。", embed=None)
-        await interaction.channel.send(embed=embed, view=view)
+        await cast(discord.abc.Messageable, interaction.channel).send(embed=embed, view=view)
 
     def _sync_calculate(
         self,
         modal_data: _ModalData,
         resin: ResinType,
         colored: bool,
-    ) -> tuple[list[dict], list[str], object]:
+    ) -> tuple[list[dict], list[str], QuoteResult]:
         drive = DriveClient(self.config.google_service_account_json)
         model_files = drive.list_model_files(modal_data.folder_id)
 

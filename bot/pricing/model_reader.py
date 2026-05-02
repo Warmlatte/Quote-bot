@@ -61,7 +61,7 @@ def _load_model_sync(path: pathlib.Path) -> ModelReadResult:
 
     return ModelReadResult(
         filename=path.name,
-        volume_ml=volume_ml,
+        volume_ml=float(volume_ml),
         body_count=body_count,
     )
 

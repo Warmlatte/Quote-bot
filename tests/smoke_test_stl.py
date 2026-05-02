@@ -40,6 +40,9 @@ def read_stl_files(folder: str) -> tuple[list[dict], list[str]]:
         path = os.path.join(folder, fname)
         try:
             mesh = trimesh.load(path, force="mesh")
+            if not isinstance(mesh, trimesh.Trimesh):
+                errors.append(fname)
+                continue
             vol = mesh.volume / 1000
             if not mesh.is_watertight or vol <= 0:
                 errors.append(fname)

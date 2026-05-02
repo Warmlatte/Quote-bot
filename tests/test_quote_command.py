@@ -166,7 +166,7 @@ class TestBuildQuoteEmbed:
 
     def test_title_contains_quote_number_when_provided(self):
         embed = self._build(quote_number="trb26043001")
-        assert "trb26043001" in embed.title
+        assert "trb26043001" in (embed.title or "")
 
     def test_title_without_quote_number_when_empty(self):
         embed = self._build()
@@ -174,56 +174,56 @@ class TestBuildQuoteEmbed:
 
     def test_contains_customer_name(self):
         embed = self._build(customer_name="VIP客戶")
-        field_values = [f.value for f in embed.fields]
+        field_values = [f.value or "" for f in embed.fields]
         assert any("VIP客戶" in v for v in field_values)
 
     def test_contains_final_total(self):
         embed = self._build(final_total=1234)
-        field_values = [f.value for f in embed.fields]
+        field_values = [f.value or "" for f in embed.fields]
         assert any("1234" in v for v in field_values)
 
     def test_contains_order_status(self):
         embed = self._build(order_status="未達低消")
-        field_values = [f.value for f in embed.fields]
+        field_values = [f.value or "" for f in embed.fields]
         assert any("未達低消" in v for v in field_values)
 
     def test_no_discount_field_when_zero(self):
         embed = self._build(auto_discount_amount=0, manual_discount="無")
-        field_names = [f.name for f in embed.fields]
+        field_names = [f.name or "" for f in embed.fields]
         assert not any("折扣" in n for n in field_names)
 
     def test_auto_discount_field_shown_when_nonzero(self):
         embed = self._build(auto_discount_amount=350)
-        field_names = [f.name for f in embed.fields]
+        field_names = [f.name or "" for f in embed.fields]
         assert any("折扣" in n for n in field_names)
 
     def test_manual_discount_field_shown_when_set(self):
         embed = self._build(manual_discount="九折+免運")
-        field_names = [f.name for f in embed.fields]
+        field_names = [f.name or "" for f in embed.fields]
         assert any("折扣" in n for n in field_names)
 
     def test_error_files_field_shown(self):
         embed = self._build(error_files=["broken.stl", "bad.obj"])
-        field_names = [f.name for f in embed.fields]
+        field_names = [f.name or "" for f in embed.fields]
         assert any("異常" in n for n in field_names)
 
     def test_no_error_files_field_when_empty(self):
         embed = self._build(error_files=[])
-        field_names = [f.name for f in embed.fields]
+        field_names = [f.name or "" for f in embed.fields]
         assert not any("異常" in n for n in field_names)
 
     def test_file_details_shown(self):
         embed = self._build(
             file_details=[{"filename": "model.stl", "volume_ml": 50.0, "body_count": 1}]
         )
-        field_values = [f.value for f in embed.fields]
+        field_values = [f.value or "" for f in embed.fields]
         assert any("model.stl" in v for v in field_values)
 
     def test_file_details_capped_at_10(self):
         many = [{"filename": f"m{i}.stl", "volume_ml": 1.0, "body_count": 1} for i in range(15)]
         embed = self._build(file_details=many)
-        detail_fields = [f for f in embed.fields if "m" in f.value.lower() and ".stl" in f.value.lower()]
-        shown_files = sum(f.value.count(".stl") for f in embed.fields)
+        detail_fields = [f for f in embed.fields if "m" in (f.value or "").lower() and ".stl" in (f.value or "").lower()]
+        shown_files = sum((f.value or "").count(".stl") for f in embed.fields)
         assert shown_files <= 10
 
 

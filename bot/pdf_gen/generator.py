@@ -74,14 +74,14 @@ def _draw_footer(canvas, doc) -> None:
 
 
 def _style(size: int = 10, bold: bool = False, align: str = "LEFT") -> ParagraphStyle:
-    align_map = {"LEFT": 0, "CENTER": 1, "RIGHT": 2}
+    alignment = 1 if align == "CENTER" else 2 if align == "RIGHT" else 0
     font = _FONT_NAME_BOLD if bold else _FONT_NAME
     return ParagraphStyle(
         name=f"cjk_{size}_{bold}_{align}",
         fontName=font,
         fontSize=size,
         leading=size * 1.5,
-        alignment=align_map.get(align, 0),
+        alignment=alignment,  # type: ignore[arg-type]
     )
 
 

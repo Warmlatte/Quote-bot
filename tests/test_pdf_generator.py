@@ -1,12 +1,13 @@
 import os
 import pytest
+from typing import Any
 from unittest.mock import patch
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(PROJECT_ROOT, "assets", "NotoSansCJK-Regular.otf")
 
-BASE_KWARGS = dict(
+BASE_KWARGS: dict[str, Any] = dict(
     quote_number="Q20260426-001",
     customer_name="測試客戶",
     resin_label="RPG高精度樹脂",

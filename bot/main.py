@@ -44,6 +44,7 @@ class TheRollBarBot(commands.Bot):
         self._daily_sync.start()
 
     async def on_ready(self) -> None:
+        assert self.user is not None
         print(f"Logged in as {self.user} ({self.user.id})")
 
     @tasks.loop(hours=24)
