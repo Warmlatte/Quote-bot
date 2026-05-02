@@ -584,20 +584,28 @@ class QuoteCog(commands.Cog):
             )
 
         with tempfile.TemporaryDirectory() as tmp:
-            paths = []
+            paths: list[str] = []
+            download_errors: list[str] = []
             for f in model_files:
                 file_dir = os.path.join(tmp, f["id"])
                 os.makedirs(file_dir, exist_ok=True)
                 dest = os.path.join(file_dir, f["name"])
-                drive.download_file(f["id"], dest)
-                paths.append(dest)
+                try:
+                    drive.download_file(f["id"], dest)
+                    paths.append(dest)
+                except Exception as exc:
+                    _logger.warning("下載失敗 %s (id=%s): %s", f["name"], f["id"], exc)
+                    download_errors.append(f["name"])
 
-            results, error_files = asyncio.run(read_models(paths))
+            results, parse_errors = asyncio.run(read_models(paths))
+
+        error_files = download_errors + parse_errors
 
         if not results:
             raise ValueError(
-                f"找到 {len(error_files)} 個檔案但全部解析失敗（可能非 watertight 或格式損毀）：\n"
-                + "\n".join(f"• {f}" for f in error_files)
+                f"找到 {len(model_files)} 個模型檔但全部讀取失敗"
+                "（可能為 Google Drive 捷徑、權限不足或格式損毀）：\n"
+                + "\n".join(f"• {f}" for f in error_files[:10])
             )
 
         total_volume = sum(r.volume_ml for r in results)

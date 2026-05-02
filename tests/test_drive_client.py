@@ -275,6 +275,19 @@ class TestListModelFilesRecursive:
         result = self._run(folder_responses)
         assert result[0] == {"id": "abc", "name": "model.stl"}
 
+    def test_shortcuts_excluded_from_model_listing(self):
+        """mimeType 為 google-apps.shortcut 的捷徑不應被列入模型清單。"""
+        folder_responses = {
+            "parent": [
+                {"id": "1", "name": "model.stl",    "mimeType": "application/octet-stream"},
+                {"id": "2", "name": "shortcut.stl", "mimeType": "application/vnd.google-apps.shortcut"},
+                {"id": "3", "name": "doc.stl",      "mimeType": "application/vnd.google-apps.document"},
+            ]
+        }
+        result = self._run(folder_responses)
+        assert len(result) == 1
+        assert result[0]["id"] == "1"
+
     def test_default_max_depth_allows_three_levels(self):
         """Default max_depth=5 allows 3-level nesting that was blocked with old max_depth=2."""
         folder_responses = {

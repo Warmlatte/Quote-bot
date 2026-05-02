@@ -623,10 +623,40 @@ class TestSyncCalculateUsesRecursiveListing:
         with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
              patch("bot.commands.quote.read_models", new_callable=AsyncMock,
                    return_value=([], ["broken.stl"])):
-            with pytest.raises(ValueError, match="解析失敗"):
+            with pytest.raises(ValueError, match="讀取失敗"):
                 QuoteCog._sync_calculate(
                     self._make_cog(), self._make_modal_data(), ResinType.RPG, False
                 )
+
+    def test_download_failure_is_graceful_and_continues(self):
+        """單一檔案下載失敗（捷徑/無權限）不應中斷其他檔案的計算。"""
+        from bot.commands.quote import ResinType, QuoteCog
+        mock_drive = MagicMock()
+        mock_drive.list_model_files_recursive.return_value = [
+            {"id": "id_ok",   "name": "good.stl"},
+            {"id": "id_fail", "name": "shortcut.stl"},
+        ]
+
+        def download_side_effect(file_id, dest):
+            if file_id == "id_fail":
+                raise Exception("403 cannotDownloadShortcut")
+
+        mock_drive.download_file.side_effect = download_side_effect
+        mock_result = MagicMock()
+        mock_result.volume_ml = 5.0
+        mock_result.body_count = 1
+        mock_result.filename = "good.stl"
+
+        with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
+             patch("bot.commands.quote.read_models", new_callable=AsyncMock,
+                   return_value=([mock_result], [])):
+            file_details, error_files, quote_result = QuoteCog._sync_calculate(
+                self._make_cog(), self._make_modal_data(), ResinType.RPG, False
+            )
+
+        assert len(file_details) == 1
+        assert "shortcut.stl" in error_files
+        assert quote_result.material_cost > 0
 
     def test_same_filename_different_subfolders_use_unique_paths(self):
         """同名檔案來自不同子資料夾時，下載路徑必須不同（以 file ID 為子目錄）。"""

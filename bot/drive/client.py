@@ -13,6 +13,7 @@ _SCOPES = ["https://www.googleapis.com/auth/drive"]
 _FOLDER_RE = re.compile(r"drive\.google\.com/drive/folders/([^/?]+)")
 _MODEL_EXTS = {".stl", ".obj"}
 _FOLDER_MIME = "application/vnd.google-apps.folder"
+_GOOGLE_APPS_MIME_PREFIX = "application/vnd.google-apps."
 
 
 def extract_folder_id(url: str) -> str:
@@ -81,7 +82,10 @@ class DriveClient:
                         results.extend(
                             self._scan_folder(item["id"], current_depth + 1, max_depth)
                         )
-                elif os.path.splitext(item["name"])[1].lower() in _MODEL_EXTS:
+                elif (
+                    not item["mimeType"].startswith(_GOOGLE_APPS_MIME_PREFIX)
+                    and os.path.splitext(item["name"])[1].lower() in _MODEL_EXTS
+                ):
                     results.append({"id": item["id"], "name": item["name"]})
 
             page_token = response.get("nextPageToken")
