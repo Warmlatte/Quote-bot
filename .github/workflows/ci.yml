@@ -21,6 +21,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest-cov ruff
 
+      - name: Debug font paths
+        run: find /usr/share/fonts -name "*oto*" -o -name "*noto*" 2>/dev/null | sort | head -30
+
       - name: Lint
         run: python -m ruff check bot/ tests/
 

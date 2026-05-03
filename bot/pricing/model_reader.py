@@ -93,7 +93,10 @@ async def read_models(
         try:
             result = await loop.run_in_executor(None, _load_model_sync, path)
             results.append(result)
-        except Exception:
+        except Exception as _exc:
+            import traceback as _tb
+            print(f"[DEBUG model_reader] {path.name}: {type(_exc).__name__}: {_exc}")
+            _tb.print_exc()
             error_files.append(path.name)
 
     return results, error_files
