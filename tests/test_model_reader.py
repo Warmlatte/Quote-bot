@@ -225,7 +225,7 @@ class TestReadModelsAsync:
         stl_bytes = _unit_cube_stl()
         p = _make_temp_stl(tmp_path, "cube.stl", stl_bytes)
 
-        with patch("asyncio.get_event_loop") as mock_loop:
+        with patch("asyncio.get_running_loop") as mock_loop:
             mock_loop.return_value = MagicMock()
             mock_loop.return_value.run_in_executor = AsyncMock(
                 return_value=ModelReadResult(

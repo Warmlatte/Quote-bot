@@ -86,7 +86,7 @@ async def read_models(
     results: list[ModelReadResult] = []
     error_files: list[str] = []
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     for raw_path in paths:
         path = pathlib.Path(raw_path)
