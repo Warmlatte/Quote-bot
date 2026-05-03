@@ -484,19 +484,25 @@ class QuoteActionView(discord.ui.View):
         self._shipping_free_label: bool = False
         self._message: discord.Message | None = None
 
+    def _compute_merchandise_total(self) -> int:
+        """商品小計（折扣後，不含運費）。"""
+        return self._quote_result.final_total - self._manual_discount_amount
+
     def _compute_raw_total(self) -> int:
-        return self._quote_result.final_total - self._manual_discount_amount + self._shipping_fee
+        """商品小計 + 運費，無低消補足（用於拒絕記錄）。"""
+        return self._compute_merchandise_total() + self._shipping_fee
 
     def _compute_min_order_supplement(self) -> int:
+        """需補足至低消 500 的金額（以商品小計為基準，運費另計）。"""
         if self._quote_result.order_status != "未達低消":
             return 0
-        return max(0, 500 - self._compute_raw_total())
+        return max(0, 500 - self._compute_merchandise_total())
 
     def _compute_final_total(self) -> int:
-        raw = self._compute_raw_total()
-        if self._quote_result.order_status == "未達低消":
-            return max(500, raw)
-        return raw
+        """顯示總價 = 商品小計 + 低消補足 + 運費。"""
+        merch = self._compute_merchandise_total()
+        supplement = self._compute_min_order_supplement()
+        return merch + supplement + self._shipping_fee
 
     async def _refresh_embed(self) -> None:
         qr = self._quote_result

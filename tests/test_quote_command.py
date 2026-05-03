@@ -1032,6 +1032,24 @@ class TestQuoteActionViewFinalTotal:
         assert view._compute_final_total() == 500
 
     @pytest.mark.asyncio
+    async def test_min_order_supplement_with_shipping(self, tmp_path):
+        # 運費是額外服務費，不計入低消基準
+        # 低消不足 300，補足 200 至 500，再加運費 60 = 560
+        view = _make_full_action_view(tmp_path, auto_discounted_total=300)
+        view._quote_result.order_status = "未達低消"
+        view._shipping_fee = 60
+        assert view._compute_min_order_supplement() == 200  # 補足量不受運費影響
+        assert view._compute_final_total() == 560           # 500 + 60
+
+    @pytest.mark.asyncio
+    async def test_min_order_raw_total_for_reject_includes_shipping(self, tmp_path):
+        # 拒絕報價存原始金額（含運費，無補足）
+        view = _make_full_action_view(tmp_path, auto_discounted_total=300)
+        view._quote_result.order_status = "未達低消"
+        view._shipping_fee = 60
+        assert view._compute_raw_total() == 360  # 300 + 60，無補足
+
+    @pytest.mark.asyncio
     async def test_min_order_supplement_zero_when_normal(self, tmp_path):
         view = _make_full_action_view(tmp_path, auto_discounted_total=1000)
         assert view._compute_min_order_supplement() == 0
