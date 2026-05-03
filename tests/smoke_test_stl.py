@@ -4,7 +4,6 @@ STL Smoke Test — LAT-147
 執行方式：python tests/smoke_test_stl.py
 不納入 pytest 自動收集。
 """
-import math
 import os
 import sys
 

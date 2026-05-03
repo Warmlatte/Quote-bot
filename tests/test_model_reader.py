@@ -18,7 +18,6 @@ import struct
 from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import numpy as np
 import pytest
 import trimesh
 

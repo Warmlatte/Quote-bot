@@ -1,6 +1,4 @@
-import asyncio
-import tempfile
-from unittest.mock import MagicMock, AsyncMock, patch, call
+from unittest.mock import MagicMock, AsyncMock, patch
 import discord
 import pytest
 
@@ -40,7 +38,6 @@ class TestGenerateQuoteNumber:
 
     def test_second_quote_increments(self, tmp_path):
         from bot.commands.quote import _generate_quote_number
-        from bot.commands.quote import _ModalData
         db = DBClient(str(tmp_path / "test.db"))
         # 先用 _generate_quote_number 的日期前綴手動插一筆接受記錄
         from datetime import datetime, timedelta, timezone
@@ -391,7 +388,6 @@ class TestBuildQuoteEmbed:
     def test_file_details_capped_at_10(self):
         many = [{"filename": f"m{i}.stl", "volume_ml": 1.0, "body_count": 1} for i in range(15)]
         embed = self._build(file_details=many)
-        detail_fields = [f for f in embed.fields if "m" in (f.value or "").lower() and ".stl" in (f.value or "").lower()]
         shown_files = sum((f.value or "").count(".stl") for f in embed.fields)
         assert shown_files <= 10
 
@@ -482,7 +478,7 @@ class TestDoAccept:
         db = DBClient(str(tmp_path / "test.db"))
         stub = _make_view_stub(db)
 
-        with patch("bot.commands.quote.SheetsClient") as mock_sheets_cls:
+        with patch("bot.sheets.client.SheetsClient") as mock_sheets_cls:
             QuoteActionView._record_acceptance(stub, "Discord 附件", "trb26043001")
 
         mock_sheets_cls.assert_not_called()
@@ -546,7 +542,7 @@ class TestDoReject:
         db = DBClient(str(tmp_path / "test.db"))
         stub = _make_view_stub(db)
 
-        with patch("bot.commands.quote.SheetsClient") as mock_sheets_cls:
+        with patch("bot.sheets.client.SheetsClient") as mock_sheets_cls:
             QuoteActionView._do_reject(stub)
 
         mock_sheets_cls.assert_not_called()
@@ -965,7 +961,6 @@ class TestShippingModal:
 def _make_full_action_view(tmp_path, auto_discounted_total: int = 1000, auto_free_ship: bool = False):
     """Instantiate a real QuoteActionView with in-memory DB for integration tests."""
     from bot.commands.quote import QuoteActionView, _ModalData
-    from bot.pricing.engine import DiscountInput
     db = DBClient(str(tmp_path / "test.db"))
     modal_data = _ModalData(
         customer_name="測試客戶",

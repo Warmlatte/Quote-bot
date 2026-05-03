@@ -1,4 +1,3 @@
-import os
 import pytest
 from bot.config import Config
 

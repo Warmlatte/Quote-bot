@@ -136,7 +136,7 @@ NEW_BASE_KWARGS: dict[str, Any] = dict(
 def test_new_signature_no_discount_no_shipping(tmp_path):
     from bot.pdf_gen.generator import generate_quote_pdf
     output = str(tmp_path / "quote.pdf")
-    result = generate_quote_pdf(**NEW_BASE_KWARGS, output_path=output)
+    generate_quote_pdf(**NEW_BASE_KWARGS, output_path=output)
     assert os.path.exists(output)
     assert os.path.getsize(output) > 1000
     text = _read_pdf_text(output)

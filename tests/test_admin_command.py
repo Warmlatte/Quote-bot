@@ -1,5 +1,4 @@
 """Tests for AdminCog /sync_sheets command."""
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord

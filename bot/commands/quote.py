@@ -13,14 +13,13 @@ from discord.ext import commands
 
 from bot.config import Config
 from bot.db.client import DBClient
-
-_logger = logging.getLogger(__name__)
-_TZ_TAIPEI = timezone(timedelta(hours=8))
 from bot.drive.client import DriveClient, extract_folder_id
 from bot.pdf_gen.generator import generate_quote_pdf
 from bot.pricing.engine import DiscountInput, QuoteResult, ResinType, apply_manual_discount, calculate_quote
 from bot.pricing.model_reader import read_models
-from bot.sheets.client import SheetsClient
+
+_logger = logging.getLogger(__name__)
+_TZ_TAIPEI = timezone(timedelta(hours=8))
 
 def _generate_quote_number(db: DBClient) -> str:
     today = datetime.now(_TZ_TAIPEI).strftime("%y%m%d")
@@ -244,7 +243,7 @@ class ResinSelectView(discord.ui.View):
         if self._colored_btn is not None:
             self._colored_btn.disabled = self._selected_resin != ResinType.CLEAR
             self._colored_btn.style = discord.ButtonStyle.secondary
-        resin_label = next(l for l, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
+        resin_label = next(label for label, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
         await interaction.response.edit_message(
             content=f"請選擇樹脂種類：\n✅ 已選擇：{resin_label}",
             view=self,
@@ -258,7 +257,7 @@ class ResinSelectView(discord.ui.View):
         button.style = (
             discord.ButtonStyle.success if self._colored else discord.ButtonStyle.secondary
         )
-        resin_label = next(l for l, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
+        resin_label = next(label for label, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
         color_suffix = "（調色）" if self._colored else ""
         await interaction.response.edit_message(
             content=f"請選擇樹脂種類：\n✅ 已選擇：{resin_label}{color_suffix}",
@@ -275,7 +274,7 @@ class ResinSelectView(discord.ui.View):
             )
             return
 
-        resin_label = next(l for l, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
+        resin_label = next(label for label, r in _RESIN_BASE_OPTIONS if r == self._selected_resin)
         if self._selected_resin == ResinType.CLEAR and self._colored:
             resin_label += "（調色）"
 
