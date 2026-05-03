@@ -46,6 +46,6 @@ jobs:
           from bot.drive.client import DriveClient
           from bot.sheets.client import SheetsClient
           from bot.db.client import DBClient
-          from bot.sync import sync_unsynced_records
+          from bot.sync import sync_records
           print('OK — all modules import cleanly')
           "

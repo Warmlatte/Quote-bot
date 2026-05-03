@@ -47,8 +47,8 @@ def _load_model_sync(path: pathlib.Path) -> ModelReadResult:
     if not isinstance(mesh, trimesh.Trimesh):
         raise ValueError(f"無法解析為 Trimesh 物件：{path.name}")
 
-    # 體積 mm³ → ml（÷ 1000）
-    volume_mm3 = mesh.volume
+    # 體積 mm³ → ml（÷ 1000）；abs() 處理 Linux 上 trimesh 可能回傳負值的情況
+    volume_mm3 = abs(mesh.volume)
     if volume_mm3 <= 0:
         raise ValueError(
             f"模型體積 ≤ 0（{volume_mm3:.4f} mm³），可能非 watertight：{path.name}"
