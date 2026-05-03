@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest-cov ruff
+
+      - name: Lint
+        run: python -m ruff check bot/ tests/
+
+      - name: Test with coverage
+        run: |
+          python -m pytest \
+            --cov=bot \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            --cov-config=.coveragerc \
+            -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t therollbar-bot:latest .
+
+      - name: Import smoke test
+        run: |
+          docker run --rm therollbar-bot:latest python -c "
+          from bot.pricing.engine import calculate_quote, ResinType
+          from bot.pdf_gen.generator import generate_quote_pdf
+          from bot.drive.client import DriveClient
+          from bot.sheets.client import SheetsClient
+          from bot.db.client import DBClient
+          from bot.sync import sync_unsynced_records
+          print('OK — all modules import cleanly')
+          "
