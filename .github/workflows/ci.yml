@@ -18,6 +18,30 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest-cov ruff
 
+      - name: Debug trimesh loading
+        run: |
+          python -c "
+          import trimesh, io, tempfile, os, traceback
+          mesh = trimesh.creation.box(extents=[10, 10, 10])
+          buf = io.BytesIO()
+          mesh.export(buf, file_type='stl')
+          stl_bytes = buf.getvalue()
+          with tempfile.NamedTemporaryFile(suffix='.stl', delete=False) as f:
+              f.write(stl_bytes)
+              tmppath = f.name
+          try:
+              loaded = trimesh.load(tmppath, force='mesh')
+              print(f'type: {type(loaded)}')
+              print(f'isinstance Trimesh: {isinstance(loaded, trimesh.Trimesh)}')
+              if isinstance(loaded, trimesh.Trimesh):
+                  print(f'volume: {loaded.volume}')
+                  print(f'is_watertight: {loaded.is_watertight}')
+          except Exception as e:
+              traceback.print_exc()
+          finally:
+              os.unlink(tmppath)
+          "
+
       - name: Lint
         run: python -m ruff check bot/ tests/
 
