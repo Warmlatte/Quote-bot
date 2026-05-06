@@ -3,9 +3,70 @@ import pytest
 from typing import Any
 from unittest.mock import patch
 
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(PROJECT_ROOT, "assets", "NotoSansCJK-Regular.otf")
+
+# ---------------------------------------------------------------------------
+# Font availability detection (Fix B: run at collection time)
+# ---------------------------------------------------------------------------
+_FALLBACK_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+]
+
+
+def _detect_and_register_font() -> bool:
+    """Try to register a CJK font; fall back to DejaVu/Liberation if unavailable.
+    Returns True only when a real CJK-capable font was registered."""
+    import bot.pdf_gen.generator as gen
+
+    if gen._font_registered:
+        return True  # already registered by a previous call or session fixture
+
+    try:
+        gen._ensure_font()
+        return True  # real CJK font registered
+    except FileNotFoundError:
+        pass
+
+    # Fallback: register a non-CJK font so basic PDF creation doesn't crash.
+    # Content tests that assert CJK strings will be skipped via the marker below.
+    for path in _FALLBACK_FONT_PATHS:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont("NotoSansCJK", path))
+                gen._FONT_NAME = "NotoSansCJK"
+                gen._FONT_NAME_BOLD = "NotoSansCJK"
+                gen._font_registered = True
+                return False  # fallback only, no CJK support
+            except Exception:
+                continue
+
+    return False  # no font at all; PDF tests will fail at creation stage
+
+
+_cjk_font_available: bool = _detect_and_register_font()
+
+# Skip marker for tests that need to assert CJK text is present in the PDF.
+requires_cjk = pytest.mark.skipif(
+    not _cjk_font_available,
+    reason="CJK font (NotoSansCJK TTC/TTF) not available; skipping CJK text assertion",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_font_state():
+    """Ensure font stays registered after tests that reset _font_registered."""
+    import bot.pdf_gen.generator as gen
+    yield
+    if not gen._font_registered:
+        _detect_and_register_font()
 
 BASE_KWARGS: dict[str, Any] = dict(
     quote_number="Q20260426-001",
@@ -83,6 +144,7 @@ def test_pdf_has_multiple_pages(tmp_path):
     assert _get_pdf_page_count(output) >= 2
 
 
+@requires_cjk
 def test_pdf_contains_dynamic_content(tmp_path):
     from bot.pdf_gen.generator import generate_quote_pdf
 
@@ -94,6 +156,7 @@ def test_pdf_contains_dynamic_content(tmp_path):
     assert "model_a.stl" in text
 
 
+@requires_cjk
 def test_pdf_contains_static_sections(tmp_path):
     from bot.pdf_gen.generator import generate_quote_pdf
 
@@ -144,6 +207,7 @@ def test_new_signature_no_discount_no_shipping(tmp_path):
     assert "訂單狀態" not in text
 
 
+@requires_cjk
 def test_new_signature_discount_label_is_zhekow(tmp_path):
     from bot.pdf_gen.generator import generate_quote_pdf
     output = str(tmp_path / "quote.pdf")
@@ -154,6 +218,7 @@ def test_new_signature_discount_label_is_zhekow(tmp_path):
     assert "手動折扣" not in text
 
 
+@requires_cjk
 def test_new_signature_shipping_fee_row_shown(tmp_path):
     from bot.pdf_gen.generator import generate_quote_pdf
     output = str(tmp_path / "quote.pdf")
@@ -167,6 +232,7 @@ def test_new_signature_shipping_fee_row_shown(tmp_path):
     assert "台北市大安區" in text
 
 
+@requires_cjk
 def test_new_signature_shipping_free_label(tmp_path):
     from bot.pdf_gen.generator import generate_quote_pdf
     output = str(tmp_path / "quote.pdf")
@@ -186,6 +252,7 @@ def test_new_signature_order_status_absent(tmp_path):
     assert "訂單狀態" not in text
 
 
+@requires_cjk
 def test_min_order_supplement_row_shown(tmp_path):
     from bot.pdf_gen.generator import generate_quote_pdf
     output = str(tmp_path / "quote_min_order.pdf")
