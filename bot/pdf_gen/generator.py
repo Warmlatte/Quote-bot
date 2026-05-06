@@ -9,6 +9,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import (
     HRFlowable,
     Paragraph,
@@ -59,6 +60,40 @@ def _ensure_font() -> None:
         "找不到可用的 CJK 字型（TTF/TTC）。"
         f"請提供以下任一字型：{[p for p, _ in _FONT_PATHS]}"
     )
+
+
+def _create_watermark_pdf(total_pages: int) -> io.BytesIO | None:
+    """Build a watermark-only PDF with a semi-transparent logo on every page."""
+    if not os.path.exists(_LOGO_PATH):
+        return None
+    try:
+        from PIL import Image as PILImage  # noqa: PLC0415
+
+        img = PILImage.open(_LOGO_PATH).convert("RGBA")
+        orig_w, orig_h = img.size
+        r, g, b, a = img.split()
+        a = a.point(lambda x: int(x * 0.12))  # 12% opacity
+        img_wm = PILImage.merge("RGBA", (r, g, b, a))
+
+        img_buf = io.BytesIO()
+        img_wm.save(img_buf, format="PNG")
+
+        wm_w = 140 * mm
+        wm_h = wm_w * orig_h / orig_w
+        wm_x = (A4[0] - wm_w) / 2
+        wm_y = (A4[1] - wm_h) / 2
+
+        wm_pdf_buf = io.BytesIO()
+        c = Canvas(wm_pdf_buf, pagesize=A4)
+        for _ in range(total_pages):
+            img_buf.seek(0)
+            c.drawImage(ImageReader(img_buf), wm_x, wm_y, width=wm_w, height=wm_h, mask="auto")
+            c.showPage()
+        c.save()
+        wm_pdf_buf.seek(0)
+        return wm_pdf_buf
+    except Exception:
+        return None
 
 
 def _draw_footer(canvas, doc) -> None:
@@ -312,25 +347,33 @@ def generate_quote_pdf(
     _doc_count.build(_make_story(), onFirstPage=_count_pages, onLaterPages=_count_pages)
     total_pages = _last_page[0]
 
-    # ── 頁尾 + 最後一頁 Logo（置於頁尾文字正上方）────────────────────────────
-    def _footer_and_logo(canvas, doc) -> None:
-        _draw_footer(canvas, doc)
-        if doc.page == total_pages and os.path.exists(_LOGO_PATH):
-            img_reader = ImageReader(_LOGO_PATH)
-            img_w, img_h = img_reader.getSize()
-            logo_w = 30 * mm
-            logo_h = logo_w * img_h / img_w
-            logo_x = (A4[0] - logo_w) / 2
-            logo_y = 16 * mm  # 頁尾文字在 10mm，上方留 6mm 間距
-            canvas.saveState()
-            canvas.drawImage(_LOGO_PATH, logo_x, logo_y, width=logo_w, height=logo_h)
-            canvas.restoreState()
-
-    # ── 第二遍：生成最終 PDF ─────────────────────────────────────────────────
+    # ── 第二遍：生成內容 PDF（含頁尾）到記憶體 buffer ────────────────────────
+    content_buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        output_path, pagesize=A4,
+        content_buf, pagesize=A4,
         leftMargin=20 * mm, rightMargin=20 * mm,
         topMargin=20 * mm, bottomMargin=42 * mm,
     )
-    doc.build(_make_story(), onFirstPage=_footer_and_logo, onLaterPages=_footer_and_logo)
+    doc.build(_make_story(), onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+
+    # ── 浮水印合併：logo 置於每頁正中央背景 ───────────────────────────────────
+    wm_buf = _create_watermark_pdf(total_pages)
+    if wm_buf is not None:
+        from pypdf import PdfReader, PdfWriter  # noqa: PLC0415
+
+        content_buf.seek(0)
+        content_reader = PdfReader(content_buf)
+        wm_reader = PdfReader(wm_buf)
+        writer = PdfWriter()
+        for i in range(total_pages):
+            wm_page = wm_reader.pages[i]
+            wm_page.merge_page(content_reader.pages[i])  # 內容疊在浮水印之上
+            writer.add_page(wm_page)
+        with open(output_path, "wb") as f:
+            writer.write(f)
+    else:
+        content_buf.seek(0)
+        with open(output_path, "wb") as f:
+            f.write(content_buf.read())
+
     return output_path
