@@ -493,7 +493,15 @@ class BodyCountSelectView(discord.ui.View):
     async def _on_select(self, interaction: discord.Interaction) -> None:
         self._selected_idx = int(cast(Any, interaction.data)["values"][0])
         self._confirm_btn.disabled = False
-        await interaction.response.edit_message(view=self)
+        selected = self._action_view._file_details[self._selected_idx]
+        await interaction.response.edit_message(
+            content=(
+                f"選擇要修改件數的檔案：\n"
+                f"✅ 已選擇：`{selected['filename']}`"
+                f"（目前 {selected['body_count']} 件）"
+            ),
+            view=self,
+        )
 
     async def _on_confirm(self, interaction: discord.Interaction) -> None:
         if self._selected_idx is None:
