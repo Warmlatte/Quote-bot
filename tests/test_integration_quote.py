@@ -840,8 +840,6 @@ def test_body_count_override_status_transitions_to_normal(db):
     assert initial.order_status == "未達低消"
 
     # Override 1→5: fee=2×80+3×70=370, subtotal=545 → 正常
-    db2_path = str(db._conn.execute("PRAGMA database_list").fetchone()[2])
-    import sqlite3
     db2 = DBClient(":memory:")
     _, overridden, _, db_row = run_body_count_override_pipeline(
         db2, models, ResinType.RPG, override_idx=0, new_body_count=5
