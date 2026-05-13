@@ -4,7 +4,10 @@ openspec/
 docs/
 superpowers/
 CLAUDE.md
+AGENTS.md
 .claude/
+.agents/
+.codex/
 .env
 credentials/
 *.db
