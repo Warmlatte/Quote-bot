@@ -457,6 +457,100 @@ class ShippingView(discord.ui.View):
         await self.fill_address(interaction, button)
 
 
+class BodyCountSelectView(discord.ui.View):
+    def __init__(self, action_view: "QuoteActionView") -> None:
+        super().__init__(timeout=300)
+        self._action_view = action_view
+        self._selected_idx: int | None = None
+
+        select = discord.ui.Select(
+            placeholder="選擇要修改件數的檔案...",
+            options=[
+                discord.SelectOption(label=f["filename"], value=str(i))
+                for i, f in enumerate(action_view._file_details)
+            ],
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+        self._confirm_btn = discord.ui.Button(
+            label="✅ 確認",
+            style=discord.ButtonStyle.success,
+            disabled=True,
+            row=1,
+        )
+        self._confirm_btn.callback = self._on_confirm
+        self.add_item(self._confirm_btn)
+
+        cancel_btn = discord.ui.Button(
+            label="❌ 取消",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+        cancel_btn.callback = self._on_cancel
+        self.add_item(cancel_btn)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        self._selected_idx = int(cast(Any, interaction.data)["values"][0])
+        self._confirm_btn.disabled = False
+        await interaction.response.edit_message(view=self)
+
+    async def _on_confirm(self, interaction: discord.Interaction) -> None:
+        if self._selected_idx is None:
+            return
+        await interaction.response.send_modal(BodyCountModal(self._action_view, self._selected_idx))
+
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="已取消。", view=None)
+
+
+class BodyCountModal(discord.ui.Modal, title="修改件數"):
+    def __init__(self, action_view: "QuoteActionView", file_idx: int) -> None:
+        super().__init__()
+        self._action_view = action_view
+        self._file_idx = file_idx
+        current_body_count = action_view._file_details[file_idx]["body_count"]
+
+        self.count_input = discord.ui.TextInput(
+            label="件數",
+            default=str(current_body_count),
+            max_length=10,
+        )
+        self.add_item(self.count_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = (self.count_input.value or "").strip()
+        try:
+            new_count = int(raw)
+            if new_count < 1:
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ 無效的件數，請輸入正整數（如 3）。", ephemeral=True
+            )
+            return
+
+        av = self._action_view
+        idx = self._file_idx
+        new_file_details = [
+            {**f, "body_count": new_count} if i == idx else f
+            for i, f in enumerate(av._file_details)
+        ]
+        total_bodies = sum(f["body_count"] for f in new_file_details)
+        new_quote = calculate_quote(
+            resin=av._quote_result.resin,
+            colored=av._quote_result.colored,
+            volume_ml=av._quote_result.volume_ml,
+            body_count=total_bodies,
+        )
+        if av._manual_discount.mode != "none":
+            _, av._manual_discount_amount = apply_manual_discount(new_quote.final_total, av._manual_discount)
+        av._file_details = new_file_details
+        av._quote_result = new_quote
+        await interaction.response.defer()
+        await av._refresh_embed()
+
+
 class QuoteActionView(discord.ui.View):
     def __init__(
         self,
@@ -544,6 +638,15 @@ class QuoteActionView(discord.ui.View):
         view = ShippingView(action_view=self)
         await interaction.response.send_message(
             "設定運送選項：", view=view, ephemeral=True
+        )
+
+    @discord.ui.button(label="🔢 件數", style=discord.ButtonStyle.secondary, row=0)
+    async def body_count_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        view = BodyCountSelectView(action_view=self)
+        await interaction.response.send_message(
+            "選擇要修改件數的檔案：", view=view, ephemeral=True
         )
 
     @discord.ui.button(label="✅ 接受報價", style=discord.ButtonStyle.success, row=1)

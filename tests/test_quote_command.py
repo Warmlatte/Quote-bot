@@ -1056,3 +1056,352 @@ class TestQuoteActionViewFinalTotal:
         view._quote_result.order_status = "未達低消"
         assert view._compute_min_order_supplement() == 0
         assert view._compute_final_total() == 500
+
+
+# ---------------------------------------------------------------------------
+# BodyCountSelectView
+# ---------------------------------------------------------------------------
+
+def _make_action_view_for_body_count(file_details=None):
+    from bot.pricing.engine import DiscountInput, ResinType, calculate_quote
+    stub = MagicMock()
+    stub._file_details = file_details or [
+        {"filename": "a.stl", "volume_ml": 5.0, "body_count": 2},
+        {"filename": "b.obj", "volume_ml": 3.0, "body_count": 1},
+    ]
+    stub._quote_result = calculate_quote(
+        resin=ResinType.RPG, colored=False, volume_ml=8.0, body_count=3
+    )
+    stub._manual_discount = DiscountInput(mode="none", value=0)
+    stub._manual_discount_amount = 0
+    stub._refresh_embed = AsyncMock()
+    return stub
+
+
+class TestBodyCountSelectView:
+    @pytest.mark.asyncio
+    async def test_body_count_select_confirm_disabled_initially(self):
+        from bot.commands.quote import BodyCountSelectView
+        stub = _make_action_view_for_body_count()
+        view = BodyCountSelectView(stub)
+        confirm_btn = next(
+            (item for item in view.children
+             if isinstance(item, discord.ui.Button) and "確認" in (item.label or "")),
+            None,
+        )
+        assert confirm_btn is not None
+        assert confirm_btn.disabled is True
+
+    @pytest.mark.asyncio
+    async def test_body_count_select_confirm_enabled_after_select(self):
+        from bot.commands.quote import BodyCountSelectView
+        stub = _make_action_view_for_body_count()
+        view = BodyCountSelectView(stub)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.data = {"values": ["0"]}
+        interaction.response = AsyncMock()
+        await view._on_select(interaction)
+        confirm_btn = next(
+            (item for item in view.children
+             if isinstance(item, discord.ui.Button) and "確認" in (item.label or "")),
+            None,
+        )
+        assert confirm_btn is not None
+        assert confirm_btn.disabled is False
+
+    @pytest.mark.asyncio
+    async def test_body_count_select_cancel_edits_message(self):
+        from bot.commands.quote import BodyCountSelectView
+        stub = _make_action_view_for_body_count()
+        view = BodyCountSelectView(stub)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await view._on_cancel(interaction)
+        interaction.response.edit_message.assert_called_once()
+        call_kwargs = interaction.response.edit_message.call_args[1]
+        assert call_kwargs.get("content") == "已取消。"
+
+    @pytest.mark.asyncio
+    async def test_body_count_select_confirm_sends_modal(self):
+        from bot.commands.quote import BodyCountSelectView, BodyCountModal
+        stub = _make_action_view_for_body_count()
+        view = BodyCountSelectView(stub)
+        view._selected_idx = 0
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await view._on_confirm(interaction)
+        interaction.response.send_modal.assert_called_once()
+        modal_arg = interaction.response.send_modal.call_args[0][0]
+        assert isinstance(modal_arg, BodyCountModal)
+
+    @pytest.mark.asyncio
+    async def test_body_count_select_select_options_match_file_details(self):
+        from bot.commands.quote import BodyCountSelectView
+        file_details = [
+            {"filename": "model_a.stl", "volume_ml": 5.0, "body_count": 2},
+            {"filename": "model_b.obj", "volume_ml": 3.0, "body_count": 1},
+        ]
+        stub = _make_action_view_for_body_count(file_details)
+        view = BodyCountSelectView(stub)
+        select = next(
+            (item for item in view.children if isinstance(item, discord.ui.Select)),
+            None,
+        )
+        assert select is not None
+        option_labels = [opt.label for opt in select.options]
+        assert "model_a.stl" in option_labels
+        assert "model_b.obj" in option_labels
+        option_values = [opt.value for opt in select.options]
+        assert "0" in option_values
+        assert "1" in option_values
+
+
+# ---------------------------------------------------------------------------
+# BodyCountModal — validation
+# ---------------------------------------------------------------------------
+
+class TestBodyCountModalValidation:
+    def _make_stub_with_real_quote(self):
+        from bot.pricing.engine import DiscountInput, ResinType, calculate_quote
+        stub = MagicMock()
+        stub._file_details = [
+            {"filename": "a.stl", "volume_ml": 5.0, "body_count": 2},
+        ]
+        stub._quote_result = calculate_quote(
+            resin=ResinType.RPG, colored=False, volume_ml=5.0, body_count=2
+        )
+        stub._manual_discount = DiscountInput(mode="none", value=0)
+        stub._manual_discount_amount = 0
+        stub._refresh_embed = AsyncMock()
+        return stub
+
+    @pytest.mark.asyncio
+    async def test_body_count_modal_validation_valid_5(self):
+        from bot.commands.quote import BodyCountModal
+        stub = self._make_stub_with_real_quote()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "5"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        stub._refresh_embed.assert_called_once()
+        interaction.response.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_body_count_modal_validation_zero_rejected(self):
+        from bot.commands.quote import BodyCountModal
+        stub = self._make_stub_with_real_quote()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "0"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        interaction.response.send_message.assert_called_once()
+        call_args = interaction.response.send_message.call_args
+        msg = call_args[0][0] if call_args[0] else ""
+        assert "無效" in msg
+        assert call_args[1].get("ephemeral") is True
+        stub._refresh_embed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_body_count_modal_validation_abc_rejected(self):
+        from bot.commands.quote import BodyCountModal
+        stub = self._make_stub_with_real_quote()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "abc"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        interaction.response.send_message.assert_called_once()
+        call_args = interaction.response.send_message.call_args
+        msg = call_args[0][0] if call_args[0] else ""
+        assert "無效" in msg
+        assert call_args[1].get("ephemeral") is True
+        stub._refresh_embed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_body_count_modal_validation_negative_rejected(self):
+        from bot.commands.quote import BodyCountModal
+        stub = self._make_stub_with_real_quote()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "-1"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        interaction.response.send_message.assert_called_once()
+        stub._refresh_embed.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# BodyCountModal — recalculation (spec example + manual discount + shipping)
+# ---------------------------------------------------------------------------
+
+class TestBodyCountRecalculate:
+    @pytest.mark.asyncio
+    async def test_body_count_recalculate_spec_example(self):
+        """Spec example: file A(2) + file B(1) = 3; change A to 5 → total=6.
+        processing_fee = 2*80 + 3*70 + 1*60 = 430, material_cost=ceil(10*3.5)=35, subtotal=465."""
+        from bot.commands.quote import BodyCountModal
+        from bot.pricing.engine import DiscountInput, ResinType, calculate_quote
+        file_details = [
+            {"filename": "a.stl", "volume_ml": 5.0, "body_count": 2},
+            {"filename": "b.stl", "volume_ml": 5.0, "body_count": 1},
+        ]
+        stub = MagicMock()
+        stub._file_details = file_details
+        stub._quote_result = calculate_quote(
+            resin=ResinType.RPG, colored=False, volume_ml=10.0, body_count=3
+        )
+        stub._manual_discount = DiscountInput(mode="none", value=0)
+        stub._manual_discount_amount = 0
+        stub._refresh_embed = AsyncMock()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "5"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        assert stub._quote_result.body_count == 6
+        assert stub._quote_result.processing_fee == 430
+        assert stub._quote_result.material_cost == 35
+        assert stub._quote_result.subtotal == 465
+        assert stub._file_details[0]["body_count"] == 5
+        assert stub._file_details[1]["body_count"] == 1
+        stub._refresh_embed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_body_count_recalculate_file_details_not_mutated(self):
+        """Old file_details dicts should not be mutated — new list with new dict."""
+        from bot.commands.quote import BodyCountModal
+        from bot.pricing.engine import DiscountInput, ResinType, calculate_quote
+        original_dict = {"filename": "a.stl", "volume_ml": 5.0, "body_count": 2}
+        stub = MagicMock()
+        stub._file_details = [original_dict]
+        stub._quote_result = calculate_quote(
+            resin=ResinType.RPG, colored=False, volume_ml=5.0, body_count=2
+        )
+        stub._manual_discount = DiscountInput(mode="none", value=0)
+        stub._manual_discount_amount = 0
+        stub._refresh_embed = AsyncMock()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "5"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        assert original_dict["body_count"] == 2  # original dict unchanged
+
+    @pytest.mark.asyncio
+    async def test_body_count_recalculate_manual_discount_recalculated(self):
+        """Spec: 九折 active, body count change causes new final_total.
+        _manual_discount_amount = new_final_total - floor(new_final_total * 0.9)."""
+        import math
+        from bot.commands.quote import BodyCountModal
+        from bot.pricing.engine import DiscountInput, ResinType, calculate_quote
+        file_details = [
+            {"filename": "a.stl", "volume_ml": 10.0, "body_count": 2},
+        ]
+        stub = MagicMock()
+        stub._file_details = file_details
+        stub._quote_result = calculate_quote(
+            resin=ResinType.RPG, colored=False, volume_ml=10.0, body_count=2
+        )
+        stub._manual_discount = DiscountInput(mode="pct", value=0.9)
+        stub._manual_discount_amount = 0
+        stub._refresh_embed = AsyncMock()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "10"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        new_final_total = stub._quote_result.final_total
+        expected_amount = new_final_total - math.floor(new_final_total * 0.9)
+        assert stub._manual_discount_amount == expected_amount
+
+    @pytest.mark.asyncio
+    async def test_body_count_recalculate_shipping_fee_unchanged(self):
+        """_shipping_fee must remain unchanged after body count override."""
+        from bot.commands.quote import BodyCountModal
+        from bot.pricing.engine import DiscountInput, ResinType, calculate_quote
+        stub = MagicMock()
+        stub._file_details = [{"filename": "a.stl", "volume_ml": 5.0, "body_count": 2}]
+        stub._quote_result = calculate_quote(
+            resin=ResinType.RPG, colored=False, volume_ml=5.0, body_count=2
+        )
+        stub._manual_discount = DiscountInput(mode="none", value=0)
+        stub._manual_discount_amount = 0
+        stub._shipping_fee = 60
+        stub._refresh_embed = AsyncMock()
+        modal = BodyCountModal(stub, 0)
+        modal.count_input = MagicMock()
+        modal.count_input.value = "5"
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await modal.on_submit(interaction)
+        assert stub._shipping_fee == 60
+
+
+# ---------------------------------------------------------------------------
+# QuoteActionView — 🔢 件數 button
+# ---------------------------------------------------------------------------
+
+def _make_full_action_view_with_files(tmp_path):
+    from bot.commands.quote import QuoteActionView, _ModalData
+    from bot.pricing.engine import ResinType, calculate_quote
+    db = DBClient(str(tmp_path / "test.db"))
+    modal_data = _ModalData(
+        customer_name="測試客戶",
+        drive_folder_url="https://drive.google.com/drive/folders/abc",
+        folder_id="abc",
+    )
+    qr = calculate_quote(resin=ResinType.RPG, colored=False, volume_ml=10.0, body_count=3)
+    config = MagicMock()
+    config.google_service_account_json = "{}"
+    return QuoteActionView(
+        modal_data=modal_data,
+        quote_result=qr,
+        file_details=[{"filename": "a.stl", "volume_ml": 10.0, "body_count": 3}],
+        error_files=[],
+        resin_label="RPG高精度樹脂",
+        config=config,
+        db=db,
+    )
+
+
+class TestBodyCountBtn:
+    @pytest.mark.asyncio
+    async def test_body_count_btn_exists(self, tmp_path):
+        view = _make_full_action_view_with_files(tmp_path)
+        btn = next(
+            (item for item in view.children
+             if isinstance(item, discord.ui.Button) and "件數" in (item.label or "")),
+            None,
+        )
+        assert btn is not None
+
+    @pytest.mark.asyncio
+    async def test_body_count_btn_sends_ephemeral(self, tmp_path):
+        view = _make_full_action_view_with_files(tmp_path)
+        interaction = MagicMock(spec=discord.Interaction)
+        interaction.response = AsyncMock()
+        await view.body_count_btn.callback(interaction)
+        interaction.response.send_message.assert_called_once()
+        call_kwargs = interaction.response.send_message.call_args[1]
+        assert call_kwargs.get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_quote_action_view_shows_five_buttons(self, tmp_path):
+        view = _make_full_action_view_with_files(tmp_path)
+        buttons = [item for item in view.children if isinstance(item, discord.ui.Button)]
+        assert len(buttons) == 5
+        labels = [b.label for b in buttons]
+        assert "✏️ 折扣" in labels
+        assert "🚚 運送" in labels
+        assert "🔢 件數" in labels
+        assert "✅ 接受報價" in labels
+        assert "❌ 拒絕報價" in labels
