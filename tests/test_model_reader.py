@@ -5,9 +5,10 @@ TDD 測試：bot.pricing.model_reader 模組
 測試 ModelReadResult dataclass 與 read_models() 函式。
 
 業務規則（來自 CLAUDE.md）：
-- 禁止使用 mesh.split()，改用 mesh.body_count 計件
+- 禁止使用 mesh.body_count，改用 mesh.split(only_watertight=False) 計件
+- 以 len(faces) >= 100 過濾雜訊碎片，取有效連通分量數作為 body_count
 - 體積單位：trimesh 回傳 mm³，需 ÷1000 轉換為 ml
-- 非 watertight 或體積 ≤ 0 的檔案視為損毀，加入 error_files，不中斷流程
+- 非 watertight 模型不視為損毀；僅載入失敗或所有分量被過濾時加入 error_files
 - 計算移至 asyncio.run_in_executor 避免阻塞 Discord 事件迴圈
 """
 
@@ -20,8 +21,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import trimesh
+import trimesh.remesh
 
-from bot.pricing.model_reader import ModelReadResult, read_models
+from bot.pricing.model_reader import ModelReadResult, _load_model_sync, read_models
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -42,10 +44,13 @@ def _make_binary_stl(triangles: list[tuple]) -> bytes:
 
 def _unit_cube_stl() -> bytes:
     """
-    製作一個近似 10mm × 10mm × 10mm 立方體的 binary STL。
-    使用 trimesh 原生 box 生成，確保 watertight。
+    製作一個 10mm × 10mm × 10mm 立方體的 binary STL。
+    細分兩次使 faces = 192（>= 100），通過 body_count 面數過濾器。
     """
     mesh = trimesh.creation.box(extents=[10, 10, 10])
+    for _ in range(2):
+        v, f = trimesh.remesh.subdivide(mesh.vertices, mesh.faces)
+        mesh = trimesh.Trimesh(vertices=v, faces=f)
     buf = io.BytesIO()
     mesh.export(buf, file_type="stl")
     return buf.getvalue()
@@ -173,8 +178,8 @@ class TestReadModelsErrorHandling:
 
     @pytest.mark.asyncio
     async def test_non_watertight_mesh_goes_to_error(self, tmp_path):
-        """非 watertight mesh（體積 ≤ 0）應被視為損毀。"""
-        # 製作一個開放的平面 mesh（non-watertight），trimesh 體積為 0
+        """所有 shell < 100 faces（如單一三角形）→ 應加入 error_files。"""
+        # 製作一個只有 1 個面的 mesh，split 後 faces < 100 → 被過濾 → error_files
         open_mesh = trimesh.Trimesh(
             vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
             faces=[[0, 1, 2]],
@@ -187,7 +192,7 @@ class TestReadModelsErrorHandling:
 
         results, error_files = await read_models([bad_path])
 
-        # 非 watertight 體積 ≤ 0 → error
+        # 1 face < 100 → 全部分量被過濾 → error
         assert "open_mesh.stl" in error_files
 
     @pytest.mark.asyncio
@@ -240,12 +245,12 @@ class TestReadModelsAsync:
         mock_loop.return_value.run_in_executor.assert_called()
 
 
-# ─── body_count：使用 body_count，禁止 split() ───────────────────────────────
+# ─── body_count：整合測試（使用真實 STL）────────────────────────────────────
 
 class TestBodyCount:
     @pytest.mark.asyncio
     async def test_body_count_single_body(self, tmp_path):
-        """單一 watertight 物件應回傳 body_count = 1（或更多，視 trimesh 實作）。"""
+        """單一 watertight 物件應回傳 body_count >= 1。"""
         stl_bytes = _unit_cube_stl()
         p = _make_temp_stl(tmp_path, "single.stl", stl_bytes)
 
@@ -253,28 +258,85 @@ class TestBodyCount:
 
         assert results[0].body_count >= 1
 
+
+# ─── body_count：使用 split() + faces >= 100 過濾（新實作）─────────────────────
+
+class TestBodyCountWithSplit:
+    """新件數計算：mesh.split(only_watertight=False) + len(faces) >= 100 過濾。"""
+
+    def _make_shell(self, face_count: int):
+        shell = MagicMock()
+        shell.faces = list(range(face_count))
+        return shell
+
+    def _make_mock_mesh(self, volume: float = 1000.0, shells_faces: list = None):
+        if shells_faces is None:
+            shells_faces = [100]
+        mesh = MagicMock(spec=trimesh.Trimesh)
+        mesh.volume = volume
+        mesh.split.return_value = [self._make_shell(n) for n in shells_faces]
+        return mesh
+
+    def test_body_count_uses_split_single_shell(self, tmp_path):
+        """單一 >= 100 faces shell → body_count == 1。"""
+        mock_mesh = self._make_mock_mesh(shells_faces=[100])
+        p = tmp_path / "test.stl"
+        p.write_bytes(b"dummy")
+
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            result = _load_model_sync(p)
+
+        assert result.body_count == 1
+
+    def test_body_count_uses_split_two_shells(self, tmp_path):
+        """兩個各 >= 100 faces 的 shell → body_count == 2。"""
+        mock_mesh = self._make_mock_mesh(shells_faces=[100, 150])
+        p = tmp_path / "test.stl"
+        p.write_bytes(b"dummy")
+
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            result = _load_model_sync(p)
+
+        assert result.body_count == 2
+
+    def test_body_count_noise_shell_filtered(self, tmp_path):
+        """一個 >= 100 faces + 一個 < 100 faces 碎片 → body_count == 1。"""
+        mock_mesh = self._make_mock_mesh(shells_faces=[100, 50])
+        p = tmp_path / "test.stl"
+        p.write_bytes(b"dummy")
+
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            result = _load_model_sync(p)
+
+        assert result.body_count == 1
+
     @pytest.mark.asyncio
-    async def test_model_reader_does_not_call_split(self, tmp_path):
-        """確認實作中沒有呼叫 mesh.split()，而是用 mesh.body_count。"""
-        stl_bytes = _unit_cube_stl()
-        p = _make_temp_stl(tmp_path, "cube.stl", stl_bytes)
+    async def test_body_count_all_noise_raises(self, tmp_path):
+        """全部 < 100 faces → _load_model_sync 拋出 ValueError；read_models 加入 error_files。"""
+        mock_mesh = self._make_mock_mesh(shells_faces=[50, 30])
+        p = tmp_path / "test.stl"
+        p.write_bytes(b"dummy")
 
-        original_load = trimesh.load
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            with pytest.raises(ValueError):
+                _load_model_sync(p)
 
-        split_called = []
+            results, error_files = await read_models([p])
 
-        def mock_load(file_obj, **kwargs):
-            mesh = original_load(file_obj, **kwargs)
-            # 包裝 split，若被呼叫就記錄
-            original_split = getattr(mesh, "split", None)
-            if original_split is not None:
-                def tracked_split(*a, **kw):
-                    split_called.append(True)
-                    return original_split(*a, **kw)
-                mesh.split = tracked_split
-            return mesh
+        assert len(results) == 0
+        assert "test.stl" in error_files
 
-        with patch("trimesh.load", side_effect=mock_load):
-            await read_models([p])
+    @pytest.mark.asyncio
+    async def test_non_watertight_is_valid(self, tmp_path):
+        """非 watertight 但有 >= 100 faces 的 shell → 有效 ModelReadResult，非 error。"""
+        mock_mesh = self._make_mock_mesh(volume=500.0, shells_faces=[100])
+        mock_mesh.is_watertight = False
+        p = tmp_path / "test.stl"
+        p.write_bytes(b"dummy")
 
-        assert len(split_called) == 0, "model_reader 不應呼叫 mesh.split()"
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            results, error_files = await read_models([p])
+
+        assert len(results) == 1
+        assert error_files == []
+        assert results[0].body_count == 1
