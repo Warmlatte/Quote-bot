@@ -185,10 +185,10 @@ class TestQuoteCog:
     @pytest.mark.asyncio
     async def test_quote_rejects_wrong_guild(self):
         cog = self._make_cog()
-        cog.config.guild_id = 111
+        cog.config.guild_id = 111  # type: ignore[misc]
         interaction = _make_interaction(guild_id=999, role_ids=[42])
         interaction.response = AsyncMock()
-        await cog.quote.callback(cog, interaction)
+        await cog.quote.callback(cog, interaction)  # type: ignore[call-arg]
         interaction.response.send_message.assert_called_once()
         call_kwargs = interaction.response.send_message.call_args[1]
         assert call_kwargs.get("ephemeral") is True
@@ -196,11 +196,11 @@ class TestQuoteCog:
     @pytest.mark.asyncio
     async def test_quote_rejects_missing_role(self):
         cog = self._make_cog()
-        cog.config.guild_id = 111
-        cog.config.member_role_id = 42
+        cog.config.guild_id = 111  # type: ignore[misc]
+        cog.config.member_role_id = 42  # type: ignore[misc]
         interaction = _make_interaction(guild_id=111, role_ids=[99])
         interaction.response = AsyncMock()
-        await cog.quote.callback(cog, interaction)
+        await cog.quote.callback(cog, interaction)  # type: ignore[call-arg]
         interaction.response.send_message.assert_called_once()
         call_kwargs = interaction.response.send_message.call_args[1]
         assert call_kwargs.get("ephemeral") is True
@@ -208,11 +208,11 @@ class TestQuoteCog:
     @pytest.mark.asyncio
     async def test_quote_sends_modal_when_authorized(self):
         cog = self._make_cog()
-        cog.config.guild_id = 111
-        cog.config.member_role_id = 42
+        cog.config.guild_id = 111  # type: ignore[misc]
+        cog.config.member_role_id = 42  # type: ignore[misc]
         interaction = _make_interaction(guild_id=111, role_ids=[42])
         interaction.response = AsyncMock()
-        await cog.quote.callback(cog, interaction)
+        await cog.quote.callback(cog, interaction)  # type: ignore[call-arg]
         interaction.response.send_modal.assert_called_once()
 
     @pytest.mark.asyncio
@@ -644,7 +644,7 @@ class TestSyncCalculateUsesRecursiveListing:
             {"id": "id_fail", "name": "shortcut.stl"},
         ]
 
-        def download_side_effect(file_id, dest):
+        def download_side_effect(file_id, _dest):
             if file_id == "id_fail":
                 raise Exception("403 cannotDownloadShortcut")
 
