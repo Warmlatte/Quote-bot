@@ -385,11 +385,20 @@ class TestBuildQuoteEmbed:
         field_values = [f.value or "" for f in embed.fields]
         assert any("model.stl" in v for v in field_values)
 
-    def test_file_details_capped_at_10(self):
+    def test_file_details_all_shown(self):
         many = [{"filename": f"m{i}.stl", "volume_ml": 1.0, "body_count": 1} for i in range(15)]
         embed = self._build(file_details=many)
         shown_files = sum((f.value or "").count(".stl") for f in embed.fields)
-        assert shown_files <= 10
+        assert shown_files == 15
+
+    def test_file_details_split_into_multiple_fields_when_long(self):
+        # Each line is ~50 chars; 30 files should overflow 1024 chars and create ≥2 fields
+        many = [{"filename": f"very_long_filename_{i:02d}.stl", "volume_ml": 123.4, "body_count": 9} for i in range(30)]
+        embed = self._build(file_details=many)
+        detail_fields = [f for f in embed.fields if "檔案明細" in (f.name or "")]
+        assert len(detail_fields) >= 2
+        for f in detail_fields:
+            assert len(f.value or "") <= 1024
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import os
+import pathlib
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -131,15 +132,29 @@ def _build_quote_embed(
             inline=False,
         )
 
-    shown = file_details[:10]
-    if shown:
+    if file_details:
         lines = [
             f"`{f['filename']}` — {f['volume_ml']:.1f} ml，{f['body_count']} 件"
-            for f in shown
+            for f in file_details
         ]
-        if len(file_details) > 10:
-            lines.append(f"…（共 {len(file_details)} 個檔案）")
-        embed.add_field(name="檔案明細", value="\n".join(lines), inline=False)
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        current_len = 0
+        for line in lines:
+            # +1 for the newline separator
+            needed = len(line) + (1 if current else 0)
+            if current and current_len + needed > 1024:
+                chunks.append(current)
+                current = [line]
+                current_len = len(line)
+            else:
+                current.append(line)
+                current_len += needed
+        if current:
+            chunks.append(current)
+        for i, chunk in enumerate(chunks):
+            name = "檔案明細" if i == 0 else f"檔案明細（續 {i}）"
+            embed.add_field(name=name, value="\n".join(chunk), inline=False)
 
     return embed
 
@@ -266,7 +281,7 @@ class ResinSelectView(discord.ui.View):
 
     @discord.ui.button(label="開始計算", style=discord.ButtonStyle.primary, row=1)
     async def start_calc(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         if self._selected_resin is None:
             await interaction.response.send_message(
@@ -437,7 +452,7 @@ class ShippingView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
     async def fill_address(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         fee_default = 0 if self._free_active else 60
         await interaction.response.send_modal(
@@ -632,7 +647,7 @@ class QuoteActionView(discord.ui.View):
 
     @discord.ui.button(label="✏️ 折扣", style=discord.ButtonStyle.secondary, row=0)
     async def discount_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         view = DiscountSelectView(action_view=self)
         await interaction.response.send_message(
@@ -641,7 +656,7 @@ class QuoteActionView(discord.ui.View):
 
     @discord.ui.button(label="🚚 運送", style=discord.ButtonStyle.secondary, row=0)
     async def shipping_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         view = ShippingView(action_view=self)
         await interaction.response.send_message(
@@ -650,7 +665,7 @@ class QuoteActionView(discord.ui.View):
 
     @discord.ui.button(label="🔢 件數", style=discord.ButtonStyle.secondary, row=0)
     async def body_count_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         view = BodyCountSelectView(action_view=self)
         await interaction.response.send_message(
@@ -659,7 +674,7 @@ class QuoteActionView(discord.ui.View):
 
     @discord.ui.button(label="✅ 接受報價", style=discord.ButtonStyle.success, row=1)
     async def accept_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         await interaction.response.defer()
         loop = asyncio.get_event_loop()
@@ -690,7 +705,7 @@ class QuoteActionView(discord.ui.View):
 
     @discord.ui.button(label="❌ 拒絕報價", style=discord.ButtonStyle.danger, row=1)
     async def reject_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, interaction: discord.Interaction, _button: discord.ui.Button
     ) -> None:
         await interaction.response.send_modal(RejectReasonModal(self))
 
@@ -879,7 +894,7 @@ class QuoteCog(commands.Cog):
             )
 
         with tempfile.TemporaryDirectory() as tmp:
-            paths: list[str] = []
+            paths: list[str | pathlib.Path] = []
             download_errors: list[str] = []
             for f in model_files:
                 file_dir = os.path.join(tmp, f["id"])
