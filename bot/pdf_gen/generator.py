@@ -103,7 +103,7 @@ def _draw_footer(canvas, doc) -> None:
     canvas.drawCentredString(
         A4[0] / 2,
         10 * mm,
-        "骰吧工作室 | Instagram：the.roll.bar | Email：official@therollbar.xyz",
+        "骰吧遊戲設計工作室 | Instagram：the.roll.bar | Email：official@therollbar.xyz",
     )
     canvas.restoreState()
 
@@ -117,6 +117,7 @@ def _style(size: int = 10, bold: bool = False, align: str = "LEFT") -> Paragraph
         fontSize=size,
         leading=size * 1.5,
         alignment=alignment,  # type: ignore[arg-type]
+        wordWrap="CJK",
     )
 
 
@@ -133,6 +134,7 @@ def _list_item(text: str, size: int = 9) -> Paragraph:
             fontSize=size,
             leading=size * 1.5,
             leftIndent=5 * mm,
+            wordWrap="CJK",
         ),
     )
 
@@ -146,6 +148,7 @@ def _bullet(text: str, size: int = 10) -> Paragraph:
             fontSize=size,
             leading=size * 1.5,
             leftIndent=3 * mm,
+            wordWrap="CJK",
         ),
     )
 
@@ -327,7 +330,7 @@ def generate_quote_pdf(
         # ── 聯絡資訊 ────────────────────────────────────────────────────────
         s.append(_sp(6))
         s.append(Paragraph("聯絡方式：", _style(10)))
-        s.append(Paragraph("骰吧工作室", _style(10)))
+        s.append(Paragraph("骰吧遊戲設計工作室", _style(10)))
         s.append(Paragraph("Instagram：the.roll.bar", _style(10)))
         s.append(Paragraph("Email：official@therollbar.xyz", _style(10)))
 
