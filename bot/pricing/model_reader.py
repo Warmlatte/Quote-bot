@@ -48,9 +48,6 @@ def _load_model_sync(path: pathlib.Path) -> ModelReadResult:
     if not isinstance(mesh, trimesh.Trimesh):
         raise ValueError(f"無法解析為 Trimesh 物件：{path.name}")
 
-    # 體積 mm³ → ml（÷ 1000）；abs() 處理 trimesh 可能回傳負值的情況
-    volume_ml = abs(mesh.volume) / 1000.0
-
     # 禁止使用 mesh.body_count；改用 split + faces >= 100 過濾雜訊碎片
     parts = mesh.split(only_watertight=False)
     real = [p for p in parts if len(p.faces) >= 100]
@@ -58,6 +55,10 @@ def _load_model_sync(path: pathlib.Path) -> ModelReadResult:
 
     if body_count == 0:
         raise ValueError(f"所有連通分量均被面數過濾器移除（無有效幾何）：{path.name}")
+
+    # 各件獨立計算體積再加總，避免多件有號體積相互抵消導致歸零
+    # abs() 處理 trimesh 可能回傳負值的情況，÷1000 轉換 mm³ → ml
+    volume_ml = sum(abs(p.volume) for p in real) / 1000.0
 
     return ModelReadResult(
         filename=path.name,
