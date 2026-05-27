@@ -1252,8 +1252,8 @@ class TestBodyCountModalValidation:
 class TestBodyCountRecalculate:
     @pytest.mark.asyncio
     async def test_body_count_recalculate_spec_example(self):
-        """Spec example: file A(2) + file B(1) = 3; change A to 5 → total=6.
-        processing_fee = 2*80 + 3*70 + 1*60 = 430, material_cost=ceil(10*3.5)=35, subtotal=465."""
+        """file A(2) + file B(1) = 3; change A to 5 → total=6.
+        material=int(ceil(10)*4)=40; fee=3×90+3×80=510; subtotal=550."""
         from bot.commands.quote import BodyCountModal
         from bot.pricing.engine import DiscountInput, ResinType, calculate_quote
         file_details = [
@@ -1275,9 +1275,9 @@ class TestBodyCountRecalculate:
         interaction.response = AsyncMock()
         await modal.on_submit(interaction)
         assert stub._quote_result.body_count == 6
-        assert stub._quote_result.processing_fee == 430
-        assert stub._quote_result.material_cost == 35
-        assert stub._quote_result.subtotal == 465
+        assert stub._quote_result.processing_fee == 510
+        assert stub._quote_result.material_cost == 40
+        assert stub._quote_result.subtotal == 550
         assert stub._file_details[0]["body_count"] == 5
         assert stub._file_details[1]["body_count"] == 1
         stub._refresh_embed.assert_called_once()

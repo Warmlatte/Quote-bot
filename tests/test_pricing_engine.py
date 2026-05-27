@@ -15,37 +15,31 @@ from bot.pricing.engine import (
 # ── 材料費 ────────────────────────────────────────────────────────────────────
 
 class TestCalculateMaterialCost:
-    def test_rpg_integer_volume(self):
-        assert calculate_material_cost(ResinType.RPG, 10.0, colored=False) == 35
-
-    def test_rpg_decimal_volume_ceil(self):
-        # ceil(10.1 * 3.5) = ceil(35.35) = 36
-        assert calculate_material_cost(ResinType.RPG, 10.1, colored=False) == 36
-
-    def test_clear_not_colored(self):
-        assert calculate_material_cost(ResinType.CLEAR, 10.0, colored=False) == 35
-
-    def test_clear_colored(self):
-        # ceil(10.0) * 7.0 = 70
-        assert calculate_material_cost(ResinType.CLEAR, 10.0, colored=True) == 70
-
-    def test_clear_colored_decimal_volume(self):
-        # ceil(10.1 * 7.0) = ceil(70.7) = 71
-        assert calculate_material_cost(ResinType.CLEAR, 10.1, colored=True) == 71
+    @pytest.mark.parametrize("volume_ml,resin,colored,expected", [
+        (100.0, ResinType.RPG,   False, 400),  # int(ceil(100.0) * 4.0)
+        (10.3,  ResinType.RPG,   False,  44),  # int(ceil(10.3) * 4.0) = int(11 * 4.0)
+        (100.0, ResinType.CLEAR, False, 400),  # int(ceil(100.0) * 4.0)
+        (100.0, ResinType.CLEAR, True,  800),  # int(ceil(100.0) * 8.0)
+        (5.1,   ResinType.CLEAR, True,   48),  # int(ceil(5.1) * 8.0) = int(6 * 8.0)
+    ])
+    def test_material_cost_boundary_cases(self, volume_ml, resin, colored, expected):
+        assert calculate_material_cost(resin, volume_ml, colored=colored) == expected
 
 
 # ── 加工費 ────────────────────────────────────────────────────────────────────
 
 class TestCalculateProcessingFee:
     @pytest.mark.parametrize("count,expected", [
-        (1,  80),    # 1×80
-        (2,  160),   # 2×80
-        (3,  230),   # 2×80 + 1×70
-        (5,  370),   # 2×80 + 3×70
-        (8,  550),   # 2×80 + 3×70 + 3×60
-        (10, 650),   # 2×80 + 3×70 + 3×60 + 2×50
-        (12, 740),   # 2×80 + 3×70 + 3×60 + 3×50 + 1×40
-        (15, 860),   # 2×80 + 3×70 + 3×60 + 3×50 + 4×40
+        (1,  90),    # 1×90
+        (3,  270),   # 3×90
+        (4,  350),   # 3×90 + 1×80
+        (6,  510),   # 3×90 + 3×80
+        (7,  580),   # 3×90 + 3×80 + 1×70
+        (9,  720),   # 3×90 + 3×80 + 3×70
+        (10, 780),   # 3×90 + 3×80 + 3×70 + 1×60
+        (12, 900),   # 3×90 + 3×80 + 3×70 + 3×60
+        (13, 950),   # 3×90 + 3×80 + 3×70 + 3×60 + 1×50
+        (15, 1050),  # 3×90 + 3×80 + 3×70 + 3×60 + 3×50
     ])
     def test_boundary_values(self, count, expected):
         assert calculate_processing_fee(count) == expected
@@ -93,37 +87,33 @@ class TestApplyAutoDiscounts:
 class TestCalculateQuote:
     def test_normal_order(self):
         # RPG, 100.0 ml, 3 件
-        # material = int(100 * 3.5) = 350
-        # processing = 230
-        # subtotal = 580 → 正常 (500 ≤ 580 < 4000)
+        # material = int(ceil(100.0) * 4.0) = 400
+        # processing = 3×90 = 270
+        # subtotal = 670 → 正常 (500 ≤ 670 < 4000)
         result = calculate_quote(ResinType.RPG, colored=False, volume_ml=100.0, body_count=3)
 
         assert isinstance(result, QuoteResult)
-        assert result.material_cost == 350
-        assert result.processing_fee == 230
-        assert result.subtotal == 580
+        assert result.material_cost == 400
+        assert result.processing_fee == 270
+        assert result.subtotal == 670
         assert result.auto_discount_amount == 0
         assert result.auto_free_ship is False
         assert result.order_status == "正常"
-        assert result.final_total == 580
+        assert result.final_total == 670
 
     def test_order_triggers_ninety_five_percent(self):
-        # Clear colored, 500 ml, 10 件
-        # material = int(500 * 7.0) = 3500
-        # processing = 650
-        # subtotal = 4150 → 免運費, no 95%
-        # Let's use 1000 ml to trigger 7000
-        # material = int(1000 * 7.0) = 7000
-        # processing = 650
-        # subtotal = 7650 → floor(7650 * 0.95) = floor(7267.5) = 7267
+        # Clear colored, 1000 ml, 10 件
+        # material = int(ceil(1000.0) * 8.0) = 8000
+        # processing = 3×90 + 3×80 + 3×70 + 1×60 = 780
+        # subtotal = 8780 → floor(8780 * 0.95) = 8341
         result = calculate_quote(ResinType.CLEAR, colored=True, volume_ml=1000.0, body_count=10)
 
-        assert result.material_cost == 7000
-        assert result.processing_fee == 650
-        assert result.subtotal == 7650
+        assert result.material_cost == 8000
+        assert result.processing_fee == 780
+        assert result.subtotal == 8780
         assert result.auto_free_ship is True
         assert result.order_status == "免運費"
-        assert result.final_total == math.floor(7650 * 0.95)
+        assert result.final_total == math.floor(8780 * 0.95)
 
     def test_result_fields_present(self):
         result = calculate_quote(ResinType.RPG, colored=False, volume_ml=5.0, body_count=1)

@@ -10,19 +10,19 @@ class ResinType(str, Enum):
 
 
 _RESIN_COEFFICIENT: dict[tuple[ResinType, bool], float] = {
-    (ResinType.RPG, False): 3.5,
-    (ResinType.RPG, True): 3.5,
-    (ResinType.CLEAR, False): 3.5,
-    (ResinType.CLEAR, True): 7.0,
+    (ResinType.RPG, False): 4.0,
+    (ResinType.RPG, True): 4.0,
+    (ResinType.CLEAR, False): 4.0,
+    (ResinType.CLEAR, True): 8.0,
 }
 
 # (tier_size, unit_price) — last tier_size is float('inf')
 _PROCESSING_TIERS: list[tuple[float, int]] = [
-    (2, 80),
+    (3, 90),
+    (3, 80),
     (3, 70),
     (3, 60),
-    (3, 50),
-    (float("inf"), 40),
+    (float("inf"), 50),
 ]
 
 
@@ -43,7 +43,7 @@ class QuoteResult:
 
 def calculate_material_cost(resin: ResinType, volume_ml: float, colored: bool) -> int:
     coefficient = _RESIN_COEFFICIENT[(resin, colored)]
-    return math.ceil(volume_ml * coefficient)
+    return int(math.ceil(volume_ml) * coefficient)
 
 
 def calculate_processing_fee(body_count: int) -> int:
