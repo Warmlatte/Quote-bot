@@ -3,6 +3,7 @@ import discord
 import pytest
 
 from bot.db.client import DBClient
+from bot.pricing.model_reader import ModelLoadError
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +370,10 @@ class TestBuildQuoteEmbed:
         assert any("折扣" in n for n in field_names)
 
     def test_error_files_field_shown(self):
-        embed = self._build(error_files=["broken.stl", "bad.obj"])
+        embed = self._build(error_files=[
+            ModelLoadError("broken.stl", "load_failed", "載入失敗"),
+            ModelLoadError("bad.obj", "wrong_format", "非格式"),
+        ])
         field_names = [f.name or "" for f in embed.fields]
         assert any("異常" in n for n in field_names)
 
@@ -629,7 +633,7 @@ class TestSyncCalculateUsesRecursiveListing:
         ]
         with patch("bot.commands.quote.DriveClient", return_value=mock_drive), \
              patch("bot.commands.quote.read_models", new_callable=AsyncMock,
-                   return_value=([], ["broken.stl"])):
+                   return_value=([], [ModelLoadError("broken.stl", "load_failed", "x")])):
             with pytest.raises(ValueError, match="讀取失敗"):
                 QuoteCog._sync_calculate(
                     self._make_cog(), self._make_modal_data(), ResinType.RPG, False
@@ -662,7 +666,7 @@ class TestSyncCalculateUsesRecursiveListing:
             )
 
         assert len(file_details) == 1
-        assert "shortcut.stl" in error_files
+        assert any(e.filename == "shortcut.stl" for e in error_files)
         assert quote_result.material_cost > 0
 
     def test_same_filename_different_subfolders_use_unique_paths(self):

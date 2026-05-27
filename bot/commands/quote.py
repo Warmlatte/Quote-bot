@@ -17,7 +17,7 @@ from bot.db.client import DBClient
 from bot.drive.client import DriveClient, extract_folder_id
 from bot.pdf_gen.generator import generate_quote_pdf
 from bot.pricing.engine import DiscountInput, QuoteResult, ResinType, apply_manual_discount, calculate_quote
-from bot.pricing.model_reader import read_models
+from bot.pricing.model_reader import ModelLoadError, read_models
 
 _logger = logging.getLogger(__name__)
 _TZ_TAIPEI = timezone(timedelta(hours=8))
@@ -54,6 +54,12 @@ class _ModalData:
 # Pure helpers (unit-testable)
 # ---------------------------------------------------------------------------
 
+def _format_error_line(err: ModelLoadError) -> str:
+    if err.kind == "too_small":
+        return f"⚠️ {err.filename} — {err.detail}"
+    return f"❌ {err.filename} — {err.detail}"
+
+
 def _format_file_details(file_details: list[dict]) -> str:
     if not file_details:
         return ""
@@ -83,7 +89,7 @@ def _build_quote_embed(
     final_total: int,
     order_status: str,
     file_details: list[dict],
-    error_files: list[str],
+    error_files: list[ModelLoadError],
     manual_discount_amount: int = 0,
     min_order_supplement: int = 0,
     shipping_fee: int = 0,
@@ -125,10 +131,18 @@ def _build_quote_embed(
     embed.add_field(name="訂單狀態", value=order_status, inline=True)
     embed.add_field(name="**最終總價**", value=f"**${final_total}**", inline=True)
 
+    warning_lines = [
+        f"⚠️ {f['filename']} — {f['warning']}"
+        for f in file_details
+        if f.get("warning")
+    ]
+    if warning_lines:
+        embed.add_field(name="⚠️ 注意事項", value="\n".join(warning_lines), inline=False)
+
     if error_files:
         embed.add_field(
             name="⚠️ 異常檔案",
-            value="\n".join(error_files),
+            value="\n".join(_format_error_line(e) for e in error_files),
             inline=False,
         )
 
@@ -580,7 +594,7 @@ class QuoteActionView(discord.ui.View):
         modal_data: _ModalData,
         quote_result,
         file_details: list[dict],
-        error_files: list[str],
+        error_files: list[ModelLoadError],
         resin_label: str,
         config: Config,
         db: DBClient,
@@ -723,7 +737,7 @@ class QuoteActionView(discord.ui.View):
                 customer_name=md.customer_name,
                 resin_label=self._resin_label,
                 file_details=self._file_details,
-                error_files=self._error_files,
+                error_files=[_format_error_line(e) for e in self._error_files],
                 material_cost=qr.material_cost,
                 processing_fee=qr.processing_fee,
                 subtotal=qr.subtotal,
@@ -883,7 +897,7 @@ class QuoteCog(commands.Cog):
         modal_data: _ModalData,
         resin: ResinType,
         colored: bool,
-    ) -> tuple[list[dict], list[str], QuoteResult]:
+    ) -> tuple[list[dict], list[ModelLoadError], QuoteResult]:
         drive = DriveClient(self.config.google_service_account_json)
         model_files = drive.list_model_files_recursive(modal_data.folder_id)
 
@@ -909,13 +923,17 @@ class QuoteCog(commands.Cog):
 
             results, parse_errors = asyncio.run(read_models(paths))
 
-        error_files = download_errors + parse_errors
+        download_load_errors = [
+            ModelLoadError(filename=n, kind="load_failed", detail="下載失敗，可能為 Google Drive 捷徑或無權限")
+            for n in download_errors
+        ]
+        error_files: list[ModelLoadError] = download_load_errors + parse_errors
 
         if not results:
             raise ValueError(
                 f"找到 {len(model_files)} 個模型檔但全部讀取失敗"
                 "（可能為 Google Drive 捷徑、權限不足或格式損毀）：\n"
-                + "\n".join(f"• {f}" for f in error_files[:10])
+                + "\n".join(f"• {e.filename}" for e in error_files[:10])
             )
 
         total_volume = sum(r.volume_ml for r in results)
@@ -932,6 +950,7 @@ class QuoteCog(commands.Cog):
                 "filename": r.filename,
                 "volume_ml": r.volume_ml,
                 "body_count": r.body_count,
+                **({"warning": r.warning} if r.warning else {}),
             }
             for r in results
         ]

@@ -23,7 +23,7 @@ import pytest
 import trimesh
 import trimesh.remesh
 
-from bot.pricing.model_reader import ModelReadResult, _load_model_sync, read_models
+from bot.pricing.model_reader import ModelLoadError, ModelReadResult, _load_model_sync, read_models
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -153,14 +153,14 @@ class TestReadModels:
 class TestReadModelsErrorHandling:
     @pytest.mark.asyncio
     async def test_corrupted_file_goes_to_error_files(self, tmp_path):
-        """損毀/非 watertight 且體積 ≤ 0 的檔案加入 error_files，不中斷流程。"""
+        """損毀檔案加入 load_errors（ModelLoadError），不中斷流程。"""
         bad_path = tmp_path / "bad.stl"
         bad_path.write_bytes(b"this is not a valid stl file at all")
 
-        results, error_files = await read_models([bad_path])
+        results, load_errors = await read_models([bad_path])
 
         assert len(results) == 0
-        assert "bad.stl" in error_files
+        assert any(e.filename == "bad.stl" for e in load_errors)
 
     @pytest.mark.asyncio
     async def test_mix_valid_and_invalid(self, tmp_path):
@@ -170,16 +170,15 @@ class TestReadModelsErrorHandling:
         bad_path = tmp_path / "bad.stl"
         bad_path.write_bytes(b"garbage data")
 
-        results, error_files = await read_models([good_path, bad_path])
+        results, load_errors = await read_models([good_path, bad_path])
 
         assert len(results) == 1
         assert results[0].filename == "good.stl"
-        assert "bad.stl" in error_files
+        assert any(e.filename == "bad.stl" for e in load_errors)
 
     @pytest.mark.asyncio
     async def test_non_watertight_mesh_goes_to_error(self, tmp_path):
-        """所有 shell < 100 faces（如單一三角形）→ 應加入 error_files。"""
-        # 製作一個只有 1 個面的 mesh，split 後 faces < 100 → 被過濾 → error_files
+        """所有 shell < 100 faces（如單一三角形）→ 應加入 load_errors。"""
         open_mesh = trimesh.Trimesh(
             vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
             faces=[[0, 1, 2]],
@@ -190,10 +189,10 @@ class TestReadModelsErrorHandling:
         bad_path = tmp_path / "open_mesh.stl"
         bad_path.write_bytes(buf.getvalue())
 
-        results, error_files = await read_models([bad_path])
+        results, load_errors = await read_models([bad_path])
 
-        # 1 face < 100 → 全部分量被過濾 → error
-        assert "open_mesh.stl" in error_files
+        # 1 face < 100 → 全部分量被過濾 → too_small error
+        assert any(e.filename == "open_mesh.stl" for e in load_errors)
 
     @pytest.mark.asyncio
     async def test_error_does_not_stop_remaining_files(self, tmp_path):
@@ -204,11 +203,11 @@ class TestReadModelsErrorHandling:
         good_stl = _unit_cube_stl()
         good_path = _make_temp_stl(tmp_path, "second.stl", good_stl)
 
-        results, error_files = await read_models([bad_path, good_path])
+        results, load_errors = await read_models([bad_path, good_path])
 
         assert len(results) == 1
         assert results[0].filename == "second.stl"
-        assert "first.stl" in error_files
+        assert any(e.filename == "first.stl" for e in load_errors)
 
 
 # ─── read_models：非同步行為 ──────────────────────────────────────────────────
@@ -257,6 +256,168 @@ class TestBodyCount:
         results, _ = await read_models([p])
 
         assert results[0].body_count >= 1
+
+
+# ─── ModelLoadError 單元測試 ─────────────────────────────────────────────────
+
+class TestModelLoadError:
+    def test_fields_accessible(self):
+        err = ModelLoadError(filename="bad.stl", kind="load_failed", detail="載入失敗")
+        assert err.filename == "bad.stl"
+        assert err.kind == "load_failed"
+        assert err.detail == "載入失敗"
+
+    def test_is_frozen_dataclass(self):
+        err = ModelLoadError(filename="bad.stl", kind="wrong_format", detail="非格式")
+        with pytest.raises((FrozenInstanceError, AttributeError)):
+            err.filename = "other.stl"  # type: ignore[misc]
+
+    def test_all_error_kinds(self):
+        for kind in ("too_small", "wrong_format", "load_failed"):
+            err = ModelLoadError(filename="f.stl", kind=kind, detail="detail")
+            assert err.kind == kind
+
+
+class TestModelReadResultWarning:
+    def test_warning_defaults_to_none(self):
+        r = ModelReadResult(filename="x.stl", volume_ml=1.0, body_count=1)
+        assert r.warning is None
+
+    def test_warning_can_be_set(self):
+        r = ModelReadResult(filename="x.stl", volume_ml=1.0, body_count=1, warning="注意")
+        assert r.warning == "注意"
+
+
+# ─── _load_model_sync：新行為測試（TDD RED）─────────────────────────────────
+
+class TestLoadModelSyncNewBehavior:
+    def _make_shell(self, face_count: int, volume: float = 1000.0):
+        shell = MagicMock()
+        shell.faces = list(range(face_count))
+        shell.volume = volume
+        return shell
+
+    def _make_mock_mesh(self, volume: float = 1000.0, shells_faces: list = None):
+        if shells_faces is None:
+            shells_faces = [100]
+        mesh = MagicMock(spec=trimesh.Trimesh)
+        mesh.volume = volume
+        per_shell = volume / len(shells_faces) if shells_faces else volume
+        mesh.split.return_value = [self._make_shell(n, per_shell) for n in shells_faces]
+        return mesh
+
+    def test_file_size_above_500mb_returns_result_with_warning(self, tmp_path):
+        """大於 500MB 的檔案應回傳 ModelReadResult（含 warning），而非 ModelLoadError。"""
+        mock_mesh = self._make_mock_mesh(volume=1000.0, shells_faces=[100])
+        p = tmp_path / "large.stl"
+        p.write_bytes(b"dummy")
+
+        stat_result = MagicMock()
+        stat_result.st_size = 500_000_001
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            with patch("pathlib.Path.stat", return_value=stat_result):
+                result = _load_model_sync(p)
+
+        assert isinstance(result, ModelReadResult)
+        assert result.warning is not None
+        assert "MB" in result.warning
+
+    def test_file_size_at_500mb_no_warning(self, tmp_path):
+        """恰好 500MB 不應觸發大小警告（strictly greater than）。"""
+        mock_mesh = self._make_mock_mesh(volume=1000.0, shells_faces=[100])
+        p = tmp_path / "exactly500.stl"
+        p.write_bytes(b"dummy")
+
+        stat_result = MagicMock()
+        stat_result.st_size = 500_000_000
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            with patch("pathlib.Path.stat", return_value=stat_result):
+                result = _load_model_sync(p)
+
+        assert isinstance(result, ModelReadResult)
+        assert result.warning is None
+
+    def test_zero_volume_returns_warning(self, tmp_path):
+        """體積為零時應回傳 ModelReadResult 且 warning 包含「零」。"""
+        mock_mesh = self._make_mock_mesh(volume=0.0, shells_faces=[100])
+        p = tmp_path / "zero_vol.stl"
+        p.write_bytes(b"dummy")
+
+        stat_result = MagicMock()
+        stat_result.st_size = 100
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            with patch("pathlib.Path.stat", return_value=stat_result):
+                result = _load_model_sync(p)
+
+        assert isinstance(result, ModelReadResult)
+        assert result.warning is not None
+        assert "零" in result.warning
+
+    def test_zero_volume_and_large_file_combined_warning(self, tmp_path):
+        """零體積 + 大檔案 → warning 同時包含「零」與「MB」。"""
+        mock_mesh = self._make_mock_mesh(volume=0.0, shells_faces=[100])
+        p = tmp_path / "zero_large.stl"
+        p.write_bytes(b"dummy")
+
+        stat_result = MagicMock()
+        stat_result.st_size = 500_000_001
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            with patch("pathlib.Path.stat", return_value=stat_result):
+                result = _load_model_sync(p)
+
+        assert isinstance(result, ModelReadResult)
+        assert result.warning is not None
+        assert "零" in result.warning
+        assert "MB" in result.warning
+
+    def test_all_noise_returns_too_small(self, tmp_path):
+        """所有分量 < 100 faces → 回傳 ModelLoadError(kind='too_small')。"""
+        mock_mesh = self._make_mock_mesh(shells_faces=[50, 30])
+        p = tmp_path / "noise.stl"
+        p.write_bytes(b"dummy")
+
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
+            result = _load_model_sync(p)
+
+        assert isinstance(result, ModelLoadError)
+        assert result.kind == "too_small"
+        assert result.filename == "noise.stl"
+
+    def test_non_trimesh_result_returns_wrong_format(self, tmp_path):
+        """trimesh.load 回傳非 Trimesh 物件 → ModelLoadError(kind='wrong_format')。"""
+        p = tmp_path / "scene.stl"
+        p.write_bytes(b"dummy")
+
+        with patch("bot.pricing.model_reader.trimesh.load", return_value=MagicMock(spec=[])):
+            result = _load_model_sync(p)
+
+        assert isinstance(result, ModelLoadError)
+        assert result.kind == "wrong_format"
+        assert result.filename == "scene.stl"
+
+    def test_load_exception_returns_load_failed(self, tmp_path):
+        """trimesh.load 拋出例外 → ModelLoadError(kind='load_failed')。"""
+        p = tmp_path / "corrupt.stl"
+        p.write_bytes(b"dummy")
+
+        with patch("bot.pricing.model_reader.trimesh.load", side_effect=Exception("損毀")):
+            result = _load_model_sync(p)
+
+        assert isinstance(result, ModelLoadError)
+        assert result.kind == "load_failed"
+        assert result.filename == "corrupt.stl"
+
+    @pytest.mark.asyncio
+    async def test_read_models_returns_model_load_error_list(self, tmp_path):
+        """read_models 第二回傳值的元素應為 ModelLoadError。"""
+        p = tmp_path / "bad.stl"
+        p.write_bytes(b"dummy")
+
+        with patch("bot.pricing.model_reader.trimesh.load", side_effect=Exception("失敗")):
+            results, load_errors = await read_models([p])
+
+        assert len(load_errors) > 0
+        assert all(isinstance(e, ModelLoadError) for e in load_errors)
 
 
 # ─── body_count：使用 split() + faces >= 100 過濾（新實作）─────────────────────
@@ -311,20 +472,21 @@ class TestBodyCountWithSplit:
         assert result.body_count == 1
 
     @pytest.mark.asyncio
-    async def test_body_count_all_noise_raises(self, tmp_path):
-        """全部 < 100 faces → _load_model_sync 拋出 ValueError；read_models 加入 error_files。"""
+    async def test_body_count_all_noise_returns_too_small(self, tmp_path):
+        """全部 < 100 faces → _load_model_sync 回傳 ModelLoadError(kind='too_small')；read_models 加入 load_errors。"""
         mock_mesh = self._make_mock_mesh(shells_faces=[50, 30])
         p = tmp_path / "test.stl"
         p.write_bytes(b"dummy")
 
         with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
-            with pytest.raises(ValueError):
-                _load_model_sync(p)
+            result = _load_model_sync(p)
+            assert isinstance(result, ModelLoadError)
+            assert result.kind == "too_small"
 
-            results, error_files = await read_models([p])
+            results, load_errors = await read_models([p])
 
         assert len(results) == 0
-        assert "test.stl" in error_files
+        assert any(e.filename == "test.stl" for e in load_errors)
 
     @pytest.mark.asyncio
     async def test_non_watertight_is_valid(self, tmp_path):
@@ -335,8 +497,8 @@ class TestBodyCountWithSplit:
         p.write_bytes(b"dummy")
 
         with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
-            results, error_files = await read_models([p])
+            results, load_errors = await read_models([p])
 
         assert len(results) == 1
-        assert error_files == []
+        assert load_errors == []
         assert results[0].body_count == 1

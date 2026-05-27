@@ -14,9 +14,20 @@ bot/pricing/model_reader.py
 import asyncio
 import pathlib
 from dataclasses import dataclass
-from typing import Union
+from typing import Literal, Union
 
 import trimesh
+
+ErrorKind = Literal["too_small", "wrong_format", "load_failed"]
+
+
+@dataclass(frozen=True)
+class ModelLoadError:
+    """單一模型檔案的讀取失敗結果。"""
+
+    filename: str
+    kind: ErrorKind
+    detail: str  # 中文說明，顯示於 Discord embed
 
 
 @dataclass(frozen=True)
@@ -26,30 +37,30 @@ class ModelReadResult:
     filename: str
     volume_ml: float
     body_count: int
+    warning: str | None = None  # 非 None 時顯示 ⚠️ 警告行
 
 
-def _load_model_sync(path: pathlib.Path) -> ModelReadResult:
+def _load_model_sync(path: pathlib.Path) -> "ModelReadResult | ModelLoadError":
     """
     同步讀取並解析模型檔案（供 run_in_executor 使用）。
 
-    Args:
-        path: 模型檔案路徑
-
-    Returns:
-        ModelReadResult
-
-    Raises:
-        ValueError: 若無法解析為 Trimesh 物件，或所有連通分量均被面數過濾器移除
-        Exception: trimesh 拋出的任何其他錯誤
+    所有錯誤路徑以 ModelLoadError 回傳值表達，不拋出例外。
     """
-    # force='mesh' 確保回傳單一 Trimesh 物件
-    mesh = trimesh.load(str(path), force="mesh")
+    try:
+        mesh = trimesh.load(str(path), force="mesh")
+    except Exception:
+        return ModelLoadError(
+            filename=path.name,
+            kind="load_failed",
+            detail="載入失敗，檔案可能損毀",
+        )
 
     if not isinstance(mesh, trimesh.Trimesh):
-        raise ValueError(f"無法解析為 Trimesh 物件：{path.name}")
-
-    # 體積 mm³ → ml（÷ 1000）；abs() 處理 trimesh 可能回傳負值的情況
-    volume_ml = abs(mesh.volume) / 1000.0
+        return ModelLoadError(
+            filename=path.name,
+            kind="wrong_format",
+            detail="非 3D 網格格式",
+        )
 
     # 禁止使用 mesh.body_count；改用 split + faces >= 100 過濾雜訊碎片
     parts = mesh.split(only_watertight=False)
@@ -57,18 +68,33 @@ def _load_model_sync(path: pathlib.Path) -> ModelReadResult:
     body_count = len(real)
 
     if body_count == 0:
-        raise ValueError(f"所有連通分量均被面數過濾器移除（無有效幾何）：{path.name}")
+        return ModelLoadError(
+            filename=path.name,
+            kind="too_small",
+            detail="幾何過小（無有效連通分量），可能為空模型或雜訊",
+        )
+
+    # 體積 mm³ → ml（÷ 1000）；abs() 處理各分量可能回傳負值的情況
+    volume_ml = sum(abs(p.volume) for p in real) / 1000.0
+
+    warnings: list[str] = []
+    if volume_ml == 0.0:
+        warnings.append("體積計算結果為零，模型法線可能不一致，建議人工確認")
+    size = path.stat().st_size
+    if size > 500_000_000:
+        warnings.append(f"檔案過大（{size // 1_000_000} MB），估算體積僅供參考")
 
     return ModelReadResult(
         filename=path.name,
         volume_ml=float(volume_ml),
         body_count=body_count,
+        warning="；".join(warnings) if warnings else None,
     )
 
 
 async def read_models(
     paths: list[Union[pathlib.Path, str]],
-) -> tuple[list[ModelReadResult], list[str]]:
+) -> tuple[list[ModelReadResult], list[ModelLoadError]]:
     """
     非同步讀取多個 3D 模型檔案。
 
@@ -79,24 +105,21 @@ async def read_models(
         paths: 模型檔案路徑列表（pathlib.Path 或字串）
 
     Returns:
-        (results, error_files)
-        - results: 成功解析的 ModelReadResult 列表
-        - error_files: 解析失敗的檔案名稱列表
+        (results, load_errors)
+        - results: 成功解析的 ModelReadResult 列表（含 warning 的結果仍放入此列表）
+        - load_errors: 解析失敗的 ModelLoadError 列表
     """
     results: list[ModelReadResult] = []
-    error_files: list[str] = []
+    load_errors: list[ModelLoadError] = []
 
     loop = asyncio.get_running_loop()
 
     for raw_path in paths:
         path = pathlib.Path(raw_path)
-        try:
-            result = await loop.run_in_executor(None, _load_model_sync, path)
+        result = await loop.run_in_executor(None, _load_model_sync, path)
+        if isinstance(result, ModelLoadError):
+            load_errors.append(result)
+        else:
             results.append(result)
-        except Exception as _exc:
-            import traceback as _tb
-            print(f"[DEBUG model_reader] {path.name}: {type(_exc).__name__}: {_exc}")
-            _tb.print_exc()
-            error_files.append(path.name)
 
-    return results, error_files
+    return results, load_errors
