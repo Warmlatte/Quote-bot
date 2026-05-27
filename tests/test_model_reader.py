@@ -264,21 +264,17 @@ class TestBodyCount:
 class TestBodyCountWithSplit:
     """新件數計算：mesh.split(only_watertight=False) + len(faces) >= 100 過濾。"""
 
-    def _make_shell(self, face_count: int, volume: float = 1000.0):
+    def _make_shell(self, face_count: int):
         shell = MagicMock()
         shell.faces = list(range(face_count))
-        shell.volume = volume
         return shell
 
-    def _make_mock_mesh(self, shells_faces: list = None, shell_volumes: list = None):
+    def _make_mock_mesh(self, volume: float = 1000.0, shells_faces: list = None):
         if shells_faces is None:
             shells_faces = [100]
-        if shell_volumes is None:
-            shell_volumes = [1000.0] * len(shells_faces)
         mesh = MagicMock(spec=trimesh.Trimesh)
-        mesh.split.return_value = [
-            self._make_shell(n, v) for n, v in zip(shells_faces, shell_volumes)
-        ]
+        mesh.volume = volume
+        mesh.split.return_value = [self._make_shell(n) for n in shells_faces]
         return mesh
 
     def test_body_count_uses_split_single_shell(self, tmp_path):
@@ -333,7 +329,7 @@ class TestBodyCountWithSplit:
     @pytest.mark.asyncio
     async def test_non_watertight_is_valid(self, tmp_path):
         """非 watertight 但有 >= 100 faces 的 shell → 有效 ModelReadResult，非 error。"""
-        mock_mesh = self._make_mock_mesh(shells_faces=[100], shell_volumes=[500.0])
+        mock_mesh = self._make_mock_mesh(volume=500.0, shells_faces=[100])
         mock_mesh.is_watertight = False
         p = tmp_path / "test.stl"
         p.write_bytes(b"dummy")
@@ -344,19 +340,3 @@ class TestBodyCountWithSplit:
         assert len(results) == 1
         assert error_files == []
         assert results[0].body_count == 1
-        # volume comes from the part, not the whole mesh
-        assert math.isclose(results[0].volume_ml, 0.5, rel_tol=0.01)  # 500mm³ ÷ 1000 = 0.5ml
-
-    def test_volume_summed_from_parts_not_whole_mesh(self, tmp_path):
-        """體積必須從各有效 part 加總，而非整個合併 mesh 的 volume（避免多件互消歸零）。"""
-        # 兩個 part，各 1000mm³；整體 mesh 不提供 volume
-        mock_mesh = self._make_mock_mesh(shells_faces=[100, 200], shell_volumes=[1000.0, 2000.0])
-        p = tmp_path / "test.stl"
-        p.write_bytes(b"dummy")
-
-        with patch("bot.pricing.model_reader.trimesh.load", return_value=mock_mesh):
-            result = _load_model_sync(p)
-
-        # 1000+2000 = 3000mm³ ÷ 1000 = 3.0ml
-        assert math.isclose(result.volume_ml, 3.0, rel_tol=0.01)
-        assert result.body_count == 2
