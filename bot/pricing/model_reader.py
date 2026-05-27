@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from typing import Union
 
 import trimesh
-import trimesh.repair
 
 
 @dataclass(frozen=True)
@@ -57,15 +56,8 @@ def _load_model_sync(path: pathlib.Path) -> ModelReadResult:
     if body_count == 0:
         raise ValueError(f"所有連通分量均被面數過濾器移除（無有效幾何）：{path.name}")
 
-    # 修正每個 part 的法線方向（解決多件 STL 合併導致的混合 winding 問題）
-    # 混合法線會使有號體積相消歸零；fix_normals 使所有 faces 指向一致方向
-    for part in real:
-        try:
-            trimesh.repair.fix_normals(part)
-        except Exception:
-            pass  # 修正失敗視為 non-fatal；abs() 仍可處理全反轉情況
-
-    # 各件獨立計算體積再加總；abs() 處理 trimesh 可能回傳負值；÷1000 轉換 mm³ → ml
+    # 各件獨立計算體積再加總，避免多件有號體積相互抵消導致歸零
+    # abs() 處理 trimesh 可能回傳負值的情況，÷1000 轉換 mm³ → ml
     volume_ml = sum(abs(p.volume) for p in real) / 1000.0
 
     return ModelReadResult(

@@ -360,34 +360,3 @@ class TestBodyCountWithSplit:
         # 1000+2000 = 3000mm³ ÷ 1000 = 3.0ml
         assert math.isclose(result.volume_ml, 3.0, rel_tol=0.01)
         assert result.body_count == 2
-
-    def test_inconsistent_normals_volume_recovered(self, tmp_path):
-        """混合法線（部分 faces winding 翻轉）時，body volume 會因有號體積相消歸 0。
-        fix_normals 後應回傳正確體積而非 0。"""
-        import io
-        import trimesh.remesh
-
-        # 建立 10×10×10mm 立方體並細分（保證 faces >= 100）
-        mesh = trimesh.creation.box(extents=[10, 10, 10])
-        for _ in range(2):
-            v, f = trimesh.remesh.subdivide(mesh.vertices, mesh.faces)
-            mesh = trimesh.Trimesh(vertices=v, faces=f)
-
-        # 翻轉一半 faces → 混合法線 → 有號體積相消為 0（模擬多件 STL 合併問題）
-        half = len(mesh.faces) // 2
-        mixed_faces = mesh.faces.copy()
-        mixed_faces[:half] = mixed_faces[:half, ::-1]
-        bad_mesh = trimesh.Trimesh(vertices=mesh.vertices, faces=mixed_faces, process=False)
-
-        # 確認混合法線後整體 volume = 0
-        assert bad_mesh.volume == 0.0
-
-        buf = io.BytesIO()
-        bad_mesh.export(buf, file_type="stl")
-        p = tmp_path / "mixed_normals.stl"
-        p.write_bytes(buf.getvalue())
-
-        result = _load_model_sync(p)
-
-        # fix_normals 修正後，體積應接近 1000mm³ = 1.0ml（不再是 0）
-        assert math.isclose(result.volume_ml, 1.0, rel_tol=0.1)
