@@ -35,9 +35,11 @@ class TheRollBarBot(commands.Bot):
     async def setup_hook(self) -> None:
         from bot.commands.admin import AdminCog
         from bot.commands.quote import QuoteCog
+        from bot.commands.quick_quote import QuickQuoteCog
 
         await self.add_cog(QuoteCog(self, self.config))
         await self.add_cog(AdminCog(self, self.config))
+        await self.add_cog(QuickQuoteCog(self._db, self.config))
         guild = discord.Object(id=self.config.guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)

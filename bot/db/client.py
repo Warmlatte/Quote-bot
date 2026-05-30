@@ -123,13 +123,14 @@ class DBClient:
         final_total: int,
         pdf_url: str,
     ) -> bool:
-        """Returns True if inserted; False if drive_folder_url already exists."""
-        existing = self._conn.execute(
-            "SELECT id FROM customer_records WHERE drive_folder_url = ?",
-            (drive_folder_url,),
-        ).fetchone()
-        if existing:
-            return False
+        """Returns True if inserted; False if non-empty drive_folder_url already exists."""
+        if drive_folder_url:
+            existing = self._conn.execute(
+                "SELECT id FROM customer_records WHERE drive_folder_url = ?",
+                (drive_folder_url,),
+            ).fetchone()
+            if existing:
+                return False
         self._conn.execute(
             """
             INSERT INTO customer_records
@@ -148,6 +149,19 @@ class DBClient:
             (f"trb{date_prefix}%",),
         )
         return cursor.fetchone()[0]
+
+    def count_quick_quotes_today(self, date_str: str) -> int:
+        """Count quick-decision records for the given date (YYYY-MM-DD in Taipei time)."""
+        try:
+            # created_at is stored as YYYY/MM/DD HH:MM; convert date_str to match
+            date_slash = date_str.replace("-", "/")
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM quote_records WHERE decision = '快速' AND substr(created_at, 1, 10) = ?",
+                (date_slash,),
+            )
+            return cursor.fetchone()[0]
+        except Exception:
+            return 0
 
     def get_unsynced_quote_records(self) -> list[dict[str, Any]]:
         cursor = self._conn.execute(

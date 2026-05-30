@@ -1,9 +1,12 @@
 import os
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from bot.db.client import DBClient
+
+_TZ_TAIPEI = timezone(timedelta(hours=8))
 
 _UTC8_PATTERN = re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}$")
 
@@ -347,3 +350,71 @@ def test_insert_quote_record_default_shipping_is_zero_empty(db, sample_quote_rec
     r = db.get_unsynced_quote_records()[0]
     assert r["shipping_fee"] == 0
     assert r["shipping_address"] == ""
+
+
+# --- count_quick_quotes_today ---
+
+def test_count_quick_quotes_today_zero(db):
+    today = datetime.now(_TZ_TAIPEI).strftime("%Y-%m-%d")
+    assert db.count_quick_quotes_today(today) == 0
+
+
+def test_count_quick_quotes_today_counts_only_quick(db, sample_quote_record):
+    today = datetime.now(_TZ_TAIPEI).strftime("%Y-%m-%d")
+    db.insert_quote_record(**{**sample_quote_record, "decision": "快速"})
+    db.insert_quote_record(**{**sample_quote_record, "decision": "快速"})
+    db.insert_quote_record(**{**sample_quote_record, "decision": "接受"})
+    assert db.count_quick_quotes_today(today) == 2
+
+
+def test_count_quick_quotes_today_date_filter(db):
+    today = datetime.now(_TZ_TAIPEI)
+    today_str = today.strftime("%Y-%m-%d")
+    today_slash = today.strftime("%Y/%m/%d")
+    yesterday_slash = (today - timedelta(days=1)).strftime("%Y/%m/%d")
+
+    for _ in range(3):
+        db._conn.execute(
+            """INSERT INTO quote_records
+            (created_at, quote_number, customer_name, resin_label, body_count,
+             material_cost, processing_fee, auto_discount, manual_discount,
+             subtotal, final_total, order_status, decision, shipping_fee, shipping_address)
+            VALUES (?, '', 'test', 'RPG', 1, 100, 90, '無', '無', 190, 190, '正常', '快速', 0, '')""",
+            (f"{today_slash} 10:00",),
+        )
+    for _ in range(2):
+        db._conn.execute(
+            """INSERT INTO quote_records
+            (created_at, quote_number, customer_name, resin_label, body_count,
+             material_cost, processing_fee, auto_discount, manual_discount,
+             subtotal, final_total, order_status, decision, shipping_fee, shipping_address)
+            VALUES (?, '', 'test', 'RPG', 1, 100, 90, '無', '無', 190, 190, '正常', '快速', 0, '')""",
+            (f"{yesterday_slash} 10:00",),
+        )
+    db._conn.commit()
+
+    assert db.count_quick_quotes_today(today_str) == 3
+
+
+# --- insert_customer_record empty drive_folder_url ---
+
+def test_insert_customer_record_empty_drive_url_skips_uniqueness_check(db):
+    result1 = db.insert_customer_record(
+        quote_number="", customer_name="test1", drive_folder_url="",
+        final_total=500, pdf_url="url1",
+    )
+    result2 = db.insert_customer_record(
+        quote_number="", customer_name="test2", drive_folder_url="",
+        final_total=600, pdf_url="url2",
+    )
+    assert result1 is True
+    assert result2 is True
+    assert len(db.get_unsynced_customer_records()) == 2
+
+
+def test_insert_customer_record_nonempty_url_retains_uniqueness_check(db, sample_customer_record):
+    result1 = db.insert_customer_record(**sample_customer_record)
+    result2 = db.insert_customer_record(**{**sample_customer_record, "quote_number": "Q-DUP"})
+    assert result1 is True
+    assert result2 is False
+    assert len(db.get_unsynced_customer_records()) == 1
