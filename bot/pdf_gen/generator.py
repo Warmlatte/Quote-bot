@@ -29,18 +29,19 @@ def _build_font_paths() -> list[tuple[str, int]]:
     import glob
 
     # reportlab TTFont 只支援 TrueType outlines（TTF/TTC），不支援 CFF/OTF。
+    # Debian Bookworm 的 fonts-noto-cjk 包雖然副檔名是 .ttc，
+    # 實際上是 OTC（CFF outlines），同樣無法載入。
+    # 改用 fonts-wqy-zenhei（WenQuanYi 正黑）——真正的 TrueType，支援繁中。
     static: list[tuple[str, int]] = [
         (os.path.join(_ASSETS_DIR, "NotoSansCJK-Regular.ttc"), 0),
         ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
     ]
-    # 動態掃描 Linux 系統字型目錄，覆蓋各 Debian/Ubuntu 版本的安裝路徑差異
+    # WQY 優先（Docker 裡裝 fonts-wqy-zenhei），再掃 Noto（如有 TrueType 版本）
     linux_globs = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK*.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK*.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK*.ttc",
+        "/usr/share/fonts/truetype/wqy/*.ttc",
+        "/usr/share/fonts/truetype/wqy/*.ttf",
         "/usr/share/fonts/truetype/noto/NotoSansCJK*.ttf",
-        "/usr/share/fonts/noto-cjk/*.ttc",
-        "/usr/share/fonts/noto-cjk/*.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK*.ttc",
     ]
     dynamic: list[tuple[str, int]] = [
         (p, 0)
