@@ -555,11 +555,6 @@ class QuickQuoteModal(discord.ui.Modal):
         msg = await interaction.channel.send(embed=embed, view=view)
         view._message = msg
 
-        await interaction.followup.send(
-            "✅ 估價已發布至頻道，請調整折扣與運費後點擊「✅ 確認報價」。",
-            ephemeral=True,
-        )
-
 
 # ---------------------------------------------------------------------------
 # Cog
