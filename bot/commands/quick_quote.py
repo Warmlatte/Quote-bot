@@ -3,6 +3,7 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import discord
@@ -13,13 +14,23 @@ from bot.config import Config
 from bot.db.client import DBClient
 from bot.pdf_gen.generator import generate_quote_pdf
 from bot.pricing.engine import (
+    DiscountInput,
     ResinType,
     apply_auto_discounts,
+    apply_manual_discount,
     calculate_material_cost,
     calculate_processing_fee,
     calculate_quote,
 )
-from bot.commands.quote import _build_quote_embed, _guild_check, _role_check, _RESIN_BASE_OPTIONS
+from bot.commands.quote import (
+    DiscountSelectView,
+    ShippingView,
+    _build_quote_embed,
+    _format_file_details,
+    _guild_check,
+    _role_check,
+    _RESIN_BASE_OPTIONS,
+)
 
 _logger = logging.getLogger(__name__)
 _TZ_TAIPEI = timezone(timedelta(hours=8))
@@ -126,6 +137,190 @@ def _parse_models_mixed_resin(text: str) -> tuple[list[dict], str | None]:
 def _build_quick_pdf_filename(db: DBClient, date_str: str, date_nodash: str, customer_name: str) -> str:
     count = db.count_quick_quotes_today(date_str)
     return f"trb{date_nodash}{count + 1:03d}-{customer_name}.pdf"
+
+
+# ---------------------------------------------------------------------------
+# QuickQuoteActionView — discount / shipping / confirm
+# ---------------------------------------------------------------------------
+
+class QuickQuoteActionView(discord.ui.View):
+    def __init__(
+        self,
+        db: DBClient,
+        config: Config,
+        customer_name: str,
+        resin_label: str,
+        file_details: list[dict],
+        material_cost: int,
+        processing_fee: int,
+        subtotal: int,
+        auto_discount_amount: int,
+        auto_discounted_total: int,
+        auto_free_ship: bool,
+        order_status: str,
+    ) -> None:
+        super().__init__(timeout=600)
+        self._db = db
+        self._config = config
+        self._customer_name = customer_name
+        self._resin_label = resin_label
+        self._file_details = file_details
+        self._material_cost = material_cost
+        self._processing_fee = processing_fee
+        self._subtotal = subtotal
+        self._auto_discount_amount = auto_discount_amount
+        self._auto_discounted_total = auto_discounted_total
+        self._order_status = order_status
+        self._manual_discount: DiscountInput = DiscountInput(mode="none", value=0)
+        self._manual_discount_amount: int = 0
+        self._shipping_fee: int = 0
+        self._shipping_address: str = ""
+        self._shipping_free_label: bool = False
+        self._message: discord.Message | None = None
+        # DiscountSelectView / ShippingView expect _quote_result.final_total / auto_free_ship
+        self._quote_result = SimpleNamespace(
+            final_total=auto_discounted_total,
+            auto_free_ship=auto_free_ship,
+        )
+
+    def _compute_merchandise_total(self) -> int:
+        return self._auto_discounted_total - self._manual_discount_amount
+
+    def _compute_min_order_supplement(self) -> int:
+        if self._order_status != "未達低消":
+            return 0
+        return max(0, 500 - self._compute_merchandise_total())
+
+    def _compute_final_total(self) -> int:
+        return (
+            self._compute_merchandise_total()
+            + self._compute_min_order_supplement()
+            + self._shipping_fee
+        )
+
+    async def _refresh_embed(self) -> None:
+        final_total = self._compute_final_total()
+        supplement = self._compute_min_order_supplement()
+        embed = _build_quote_embed(
+            customer_name=self._customer_name,
+            resin_label=self._resin_label,
+            body_count=sum(f["body_count"] for f in self._file_details),
+            material_cost=self._material_cost,
+            processing_fee=self._processing_fee,
+            subtotal=self._subtotal,
+            auto_discount_amount=self._auto_discount_amount,
+            final_total=final_total,
+            order_status=self._order_status,
+            file_details=self._file_details,
+            error_files=[],
+            manual_discount_amount=self._manual_discount_amount,
+            min_order_supplement=supplement,
+            shipping_fee=self._shipping_fee,
+            shipping_address=self._shipping_address,
+            shipping_free_label=self._shipping_free_label,
+        )
+        if self._message is not None:
+            await self._message.edit(embed=embed, view=self)
+
+    @discord.ui.button(label="✏️ 折扣", style=discord.ButtonStyle.secondary, row=0)
+    async def discount_btn(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ) -> None:
+        view = DiscountSelectView(action_view=self)
+        await interaction.response.send_message("選擇折扣選項：", view=view, ephemeral=True)
+
+    @discord.ui.button(label="🚚 運送", style=discord.ButtonStyle.secondary, row=0)
+    async def shipping_btn(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ) -> None:
+        view = ShippingView(action_view=self)
+        await interaction.response.send_message("設定運送選項：", view=view, ephemeral=True)
+
+    @discord.ui.button(label="✅ 確認報價", style=discord.ButtonStyle.success, row=1)
+    async def confirm_btn(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer()
+
+        final_total = self._compute_final_total()
+        supplement = self._compute_min_order_supplement()
+
+        taipei_now = datetime.now(_TZ_TAIPEI)
+        date_str = taipei_now.strftime("%Y-%m-%d")
+        date_nodash = taipei_now.strftime("%Y%m%d")
+        pdf_filename = _build_quick_pdf_filename(self._db, date_str, date_nodash, self._customer_name)
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                output_path = os.path.join(tmp, pdf_filename)
+                generate_quote_pdf(
+                    quote_number="",
+                    customer_name=self._customer_name,
+                    resin_label=self._resin_label,
+                    file_details=self._file_details,
+                    error_files=[],
+                    material_cost=self._material_cost,
+                    processing_fee=self._processing_fee,
+                    subtotal=self._subtotal,
+                    auto_discount_amount=self._auto_discount_amount,
+                    manual_discount_amount=self._manual_discount_amount,
+                    min_order_supplement=supplement,
+                    final_total=final_total,
+                    shipping_fee=self._shipping_fee,
+                    shipping_address=self._shipping_address,
+                    shipping_free_label=self._shipping_free_label,
+                    output_path=output_path,
+                )
+                with open(output_path, "rb") as f:
+                    pdf_bytes = f.read()
+        except Exception as exc:
+            await interaction.followup.send(f"❌ PDF 生成失敗：{exc}", ephemeral=True)
+            return
+
+        try:
+            pdf_msg = await interaction.channel.send(
+                file=discord.File(io.BytesIO(pdf_bytes), filename=pdf_filename),
+            )
+        except Exception as exc:
+            await interaction.followup.send(f"❌ PDF 發送失敗：{exc}", ephemeral=True)
+            return
+
+        pdf_url = pdf_msg.attachments[0].url if pdf_msg.attachments else ""
+
+        manual_discount_str = (
+            f"- NT$ {self._manual_discount_amount:,}"
+            if self._manual_discount_amount > 0
+            else "無"
+        )
+        self._db.insert_quote_record(
+            quote_number="",
+            customer_name=self._customer_name,
+            resin_label=self._resin_label,
+            body_count=sum(f["body_count"] for f in self._file_details),
+            material_cost=self._material_cost,
+            processing_fee=self._processing_fee,
+            auto_discount="95折" if self._auto_discount_amount > 0 else "無",
+            manual_discount=manual_discount_str,
+            subtotal=self._subtotal,
+            final_total=final_total,
+            order_status=self._order_status,
+            decision="快速",
+            drive_folder_url=None,
+            file_details_text=_format_file_details(self._file_details),
+            shipping_fee=self._shipping_fee,
+            shipping_address=self._shipping_address,
+        )
+        self._db.insert_customer_record(
+            quote_number="",
+            customer_name=self._customer_name,
+            drive_folder_url="",
+            final_total=final_total,
+            pdf_url=pdf_url,
+        )
+
+        self.stop()
+        if self._message is not None:
+            await self._message.edit(content="✅ 報價已確認。", view=None)
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +476,6 @@ class QuickQuoteModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        # Parse input
         if self.mode == "single":
             models, err = _parse_models_single_resin(self.models_input.value)
         else:
@@ -293,7 +487,6 @@ class QuickQuoteModal(discord.ui.Modal):
 
         customer_name = self.customer_name_input.value.strip()
 
-        # Calculate
         file_details = [
             {"filename": m["filename"], "volume_ml": m["volume_ml"], "body_count": m["body_count"]}
             for m in models
@@ -309,8 +502,9 @@ class QuickQuoteModal(discord.ui.Modal):
             material_cost = quote_result.material_cost
             processing_fee = quote_result.processing_fee
             subtotal = quote_result.subtotal
-            final_total = quote_result.final_total
+            auto_discounted_total = quote_result.final_total
             auto_discount_amount = quote_result.auto_discount_amount
+            auto_free_ship = quote_result.auto_free_ship
             order_status = quote_result.order_status
         else:
             resin_label = "混合樹脂"
@@ -320,39 +514,15 @@ class QuickQuoteModal(discord.ui.Modal):
             )
             processing_fee = calculate_processing_fee(total_body_count)
             subtotal = material_cost + processing_fee
-            final_total, _, order_status = apply_auto_discounts(subtotal)
-            auto_discount_amount = subtotal - final_total
+            auto_discounted_total, auto_free_ship, order_status = apply_auto_discounts(subtotal)
+            auto_discount_amount = subtotal - auto_discounted_total
 
-        # PDF filename (get sequence before generating)
-        taipei_now = datetime.now(_TZ_TAIPEI)
-        date_str = taipei_now.strftime("%Y-%m-%d")
-        date_nodash = taipei_now.strftime("%Y%m%d")
-        pdf_filename = _build_quick_pdf_filename(self._db, date_str, date_nodash, customer_name)
+        # Initial display total (include any low-order supplement for display)
+        initial_supplement = (
+            max(0, 500 - auto_discounted_total) if order_status == "未達低消" else 0
+        )
+        initial_total = auto_discounted_total + initial_supplement
 
-        # Generate PDF
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                output_path = os.path.join(tmp, pdf_filename)
-                generate_quote_pdf(
-                    quote_number="",
-                    customer_name=customer_name,
-                    resin_label=resin_label,
-                    file_details=file_details,
-                    error_files=[],
-                    material_cost=material_cost,
-                    processing_fee=processing_fee,
-                    subtotal=subtotal,
-                    auto_discount_amount=auto_discount_amount,
-                    final_total=final_total,
-                    output_path=output_path,
-                )
-                with open(output_path, "rb") as f:
-                    pdf_bytes = f.read()
-        except Exception as exc:
-            await interaction.followup.send(f"❌ PDF 生成失敗：{exc}", ephemeral=True)
-            return
-
-        # Build embed
         embed = _build_quote_embed(
             customer_name=customer_name,
             resin_label=resin_label,
@@ -361,49 +531,34 @@ class QuickQuoteModal(discord.ui.Modal):
             processing_fee=processing_fee,
             subtotal=subtotal,
             auto_discount_amount=auto_discount_amount,
-            final_total=final_total,
+            final_total=initial_total,
             order_status=order_status,
             file_details=file_details,
             error_files=[],
+            min_order_supplement=initial_supplement,
         )
 
-        # Send to channel (public)
-        try:
-            msg = await interaction.channel.send(
-                embed=embed,
-                file=discord.File(io.BytesIO(pdf_bytes), filename=pdf_filename),
-            )
-        except Exception as exc:
-            await interaction.followup.send(f"❌ 發送失敗：{exc}", ephemeral=True)
-            return
-
-        pdf_url = msg.attachments[0].url if msg.attachments else ""
-
-        # Write DB records
-        self._db.insert_quote_record(
-            quote_number="",
+        view = QuickQuoteActionView(
+            db=self._db,
+            config=self._config,
             customer_name=customer_name,
             resin_label=resin_label,
-            body_count=total_body_count,
+            file_details=file_details,
             material_cost=material_cost,
             processing_fee=processing_fee,
-            auto_discount="95折" if auto_discount_amount > 0 else "無",
-            manual_discount="無",
             subtotal=subtotal,
-            final_total=final_total,
+            auto_discount_amount=auto_discount_amount,
+            auto_discounted_total=auto_discounted_total,
+            auto_free_ship=auto_free_ship,
             order_status=order_status,
-            decision="快速",
-            drive_folder_url=None,
         )
-        self._db.insert_customer_record(
-            quote_number="",
-            customer_name=customer_name,
-            drive_folder_url="",
-            final_total=final_total,
-            pdf_url=pdf_url,
-        )
+        msg = await interaction.channel.send(embed=embed, view=view)
+        view._message = msg
 
-        await interaction.followup.send("✅ 快速估價已發布至頻道。", ephemeral=True)
+        await interaction.followup.send(
+            "✅ 估價已發布至頻道，請調整折扣與運費後點擊「✅ 確認報價」。",
+            ephemeral=True,
+        )
 
 
 # ---------------------------------------------------------------------------

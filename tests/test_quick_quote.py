@@ -326,7 +326,7 @@ class TestQuickQuoteModalParseError:
 class TestQuickQuoteRouteACalculation:
     @pytest.mark.asyncio
     async def test_route_a_calculation_produces_positive_final_total(self, tmp_path):
-        from bot.commands.quick_quote import QuickQuoteModal
+        from bot.commands.quick_quote import QuickQuoteModal, QuickQuoteActionView
         db = DBClient(str(tmp_path / "test.db"))
         config = MagicMock()
         config.guild_id = 111
@@ -342,26 +342,18 @@ class TestQuickQuoteRouteACalculation:
 
         interaction = _make_interaction(guild_id=111)
         mock_msg = MagicMock()
-        mock_msg.attachments = [MagicMock(url="https://cdn.discord.com/fake.pdf")]
         interaction.channel = AsyncMock()
         interaction.channel.send = AsyncMock(return_value=mock_msg)
 
-        with patch("bot.commands.quick_quote.generate_quote_pdf") as mock_pdf:
-            with patch("bot.commands.quick_quote.tempfile.TemporaryDirectory") as mock_tmp:
-                mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/fake")
-                mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
-                import builtins
-                with patch("builtins.open", MagicMock(return_value=MagicMock(
-                    __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b"PDF"))),
-                    __exit__=MagicMock(return_value=False),
-                ))):
-                    await modal.on_submit(interaction)
+        await modal.on_submit(interaction)
 
-        # Verify channel.send was called (positive final_total means calculation succeeded)
+        # channel.send is called with embed + QuickQuoteActionView (no file yet)
         interaction.channel.send.assert_called_once()
         call_kwargs = interaction.channel.send.call_args[1]
         assert "embed" in call_kwargs
-        assert "file" in call_kwargs
+        assert "view" in call_kwargs
+        assert isinstance(call_kwargs["view"], QuickQuoteActionView)
+        assert "file" not in call_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -394,27 +386,39 @@ class TestQuickQuoteRouteBCalculation:
 # DB write (task 5.1)
 # ---------------------------------------------------------------------------
 
+def _make_quick_action_view(tmp_path):
+    from bot.commands.quick_quote import QuickQuoteActionView
+    db = DBClient(str(tmp_path / "test.db"))
+    config = MagicMock()
+    file_details = [{"filename": "a.stl", "volume_ml": 10.0, "body_count": 3}]
+    view = QuickQuoteActionView(
+        db=db, config=config,
+        customer_name="測試客戶",
+        resin_label="RPG高精度樹脂",
+        file_details=file_details,
+        material_cost=400,
+        processing_fee=270,
+        subtotal=670,
+        auto_discount_amount=0,
+        auto_discounted_total=670,
+        auto_free_ship=False,
+        order_status="正常",
+    )
+    return view, db
+
+
 class TestQuickQuoteDbWrite:
     @pytest.mark.asyncio
     async def test_db_write_decision_is_quick_and_drive_url_empty(self, tmp_path):
-        from bot.commands.quick_quote import QuickQuoteModal
-        db = DBClient(str(tmp_path / "test.db"))
-        config = MagicMock()
-        modal = QuickQuoteModal(
-            mode="single",
-            resin_info={"resin": ResinType.RPG, "colored": False, "label": "RPG高精度樹脂"},
-            db=db, config=config,
-        )
-        modal.customer_name_input = MagicMock()
-        modal.customer_name_input.value = "DB測試客戶"
-        modal.models_input = MagicMock()
-        modal.models_input.value = "a.stl, 10.0, 3"
+        view, db = _make_quick_action_view(tmp_path)
+        view._message = MagicMock()
+        view._message.edit = AsyncMock()
 
         interaction = _make_interaction()
-        mock_msg = MagicMock()
-        mock_msg.attachments = [MagicMock(url="https://cdn.discord.com/pdf.pdf")]
+        mock_pdf_msg = MagicMock()
+        mock_pdf_msg.attachments = [MagicMock(url="https://cdn.discord.com/pdf.pdf")]
         interaction.channel = AsyncMock()
-        interaction.channel.send = AsyncMock(return_value=mock_msg)
+        interaction.channel.send = AsyncMock(return_value=mock_pdf_msg)
 
         with patch("bot.commands.quick_quote.generate_quote_pdf"), \
              patch("bot.commands.quick_quote.tempfile.TemporaryDirectory") as mock_tmp, \
@@ -424,7 +428,7 @@ class TestQuickQuoteDbWrite:
              ))):
             mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/fake")
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
-            await modal.on_submit(interaction)
+            await view.confirm_btn.callback(interaction)
 
         quote_records = db.get_unsynced_quote_records()
         customer_records = db.get_unsynced_customer_records()
@@ -480,7 +484,7 @@ class TestQuickQuotePdfFilename:
 class TestQuickQuoteRouteAChannelSend:
     @pytest.mark.asyncio
     async def test_quick_quote_route_a_channel_send(self, tmp_path):
-        from bot.commands.quick_quote import QuickQuoteModal
+        from bot.commands.quick_quote import QuickQuoteModal, QuickQuoteActionView
         db = DBClient(str(tmp_path / "test.db"))
         config = MagicMock()
         modal = QuickQuoteModal(
@@ -495,9 +499,93 @@ class TestQuickQuoteRouteAChannelSend:
 
         interaction = _make_interaction()
         mock_msg = MagicMock()
-        mock_msg.attachments = [MagicMock(url="https://cdn.discord.com/test.pdf")]
         interaction.channel = AsyncMock()
         interaction.channel.send = AsyncMock(return_value=mock_msg)
+
+        await modal.on_submit(interaction)
+
+        interaction.channel.send.assert_called_once()
+        call_kwargs = interaction.channel.send.call_args[1]
+        # embed and QuickQuoteActionView (with discount/shipping) must be present
+        assert "embed" in call_kwargs
+        assert isinstance(call_kwargs.get("view"), QuickQuoteActionView)
+        # no PDF file in this initial send
+        assert "file" not in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# QuickQuoteActionView — discount / shipping / confirm
+# ---------------------------------------------------------------------------
+
+class TestQuickQuoteActionView:
+    @pytest.mark.asyncio
+    async def test_has_discount_button(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        buttons = [b for b in view.children if isinstance(b, discord.ui.Button)]
+        labels = [b.label for b in buttons]
+        assert any("折扣" in (l or "") for l in labels)
+
+    @pytest.mark.asyncio
+    async def test_has_shipping_button(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        buttons = [b for b in view.children if isinstance(b, discord.ui.Button)]
+        labels = [b.label for b in buttons]
+        assert any("運送" in (l or "") or "運費" in (l or "") for l in labels)
+
+    @pytest.mark.asyncio
+    async def test_has_confirm_button(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        buttons = [b for b in view.children if isinstance(b, discord.ui.Button)]
+        labels = [b.label for b in buttons]
+        assert any("確認" in (l or "") for l in labels)
+
+    @pytest.mark.asyncio
+    async def test_compute_final_total_no_adjustments(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        assert view._compute_final_total() == 670
+
+    @pytest.mark.asyncio
+    async def test_compute_final_total_with_shipping(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        view._shipping_fee = 60
+        assert view._compute_final_total() == 730
+
+    @pytest.mark.asyncio
+    async def test_compute_final_total_with_manual_discount(self, tmp_path):
+        from bot.pricing.engine import DiscountInput
+        import math
+        view, _ = _make_quick_action_view(tmp_path)
+        view._manual_discount = DiscountInput(mode="pct", value=0.9)
+        view._manual_discount_amount = 670 - math.floor(670 * 0.9)
+        assert view._compute_final_total() == math.floor(670 * 0.9)
+
+    @pytest.mark.asyncio
+    async def test_discount_btn_sends_ephemeral_view(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        interaction = _make_interaction()
+        await view.discount_btn.callback(interaction)
+        interaction.response.send_message.assert_called_once()
+        assert interaction.response.send_message.call_args[1].get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_shipping_btn_sends_ephemeral_view(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        interaction = _make_interaction()
+        await view.shipping_btn.callback(interaction)
+        interaction.response.send_message.assert_called_once()
+        assert interaction.response.send_message.call_args[1].get("ephemeral") is True
+
+    @pytest.mark.asyncio
+    async def test_confirm_btn_sends_pdf_file_to_channel(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        view._message = MagicMock()
+        view._message.edit = AsyncMock()
+
+        interaction = _make_interaction()
+        mock_pdf_msg = MagicMock()
+        mock_pdf_msg.attachments = [MagicMock(url="https://cdn.discord.com/q.pdf")]
+        interaction.channel = AsyncMock()
+        interaction.channel.send = AsyncMock(return_value=mock_pdf_msg)
 
         with patch("bot.commands.quick_quote.generate_quote_pdf"), \
              patch("bot.commands.quick_quote.tempfile.TemporaryDirectory") as mock_tmp, \
@@ -507,15 +595,38 @@ class TestQuickQuoteRouteAChannelSend:
              ))):
             mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/fake")
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
-            await modal.on_submit(interaction)
+            await view.confirm_btn.callback(interaction)
 
-        interaction.channel.send.assert_called_once()
         call_kwargs = interaction.channel.send.call_args[1]
-        # embed and file must be present
-        assert "embed" in call_kwargs
         assert "file" in call_kwargs
-        # no view attached
-        assert call_kwargs.get("view") is None
+
+    @pytest.mark.asyncio
+    async def test_confirm_btn_includes_shipping_in_pdf_call(self, tmp_path):
+        view, _ = _make_quick_action_view(tmp_path)
+        view._message = MagicMock()
+        view._message.edit = AsyncMock()
+        view._shipping_fee = 60
+        view._shipping_address = "台北市大安區"
+
+        interaction = _make_interaction()
+        mock_pdf_msg = MagicMock()
+        mock_pdf_msg.attachments = [MagicMock(url="https://cdn.discord.com/q.pdf")]
+        interaction.channel = AsyncMock()
+        interaction.channel.send = AsyncMock(return_value=mock_pdf_msg)
+
+        with patch("bot.commands.quick_quote.generate_quote_pdf") as mock_gen, \
+             patch("bot.commands.quick_quote.tempfile.TemporaryDirectory") as mock_tmp, \
+             patch("builtins.open", MagicMock(return_value=MagicMock(
+                 __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b"PDF"))),
+                 __exit__=MagicMock(return_value=False),
+             ))):
+            mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/fake")
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            await view.confirm_btn.callback(interaction)
+
+        call_kwargs = mock_gen.call_args[1]
+        assert call_kwargs.get("shipping_fee") == 60
+        assert call_kwargs.get("shipping_address") == "台北市大安區"
 
 
 # ---------------------------------------------------------------------------
