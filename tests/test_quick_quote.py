@@ -1,4 +1,3 @@
-import io
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -177,7 +176,7 @@ class TestQuickModeSelectView:
 
     @pytest.mark.asyncio
     async def test_same_resin_button_edits_to_resin_select_view(self):
-        from bot.commands.quick_quote import QuickModeSelectView, QuickResinSelectView
+        from bot.commands.quick_quote import QuickResinSelectView
         view = self._make_view()
         interaction = _make_interaction()
         same_btn = next(
@@ -191,7 +190,7 @@ class TestQuickModeSelectView:
 
     @pytest.mark.asyncio
     async def test_mixed_resin_button_opens_mixed_modal(self):
-        from bot.commands.quick_quote import QuickModeSelectView, QuickQuoteModal
+        from bot.commands.quick_quote import QuickQuoteModal
         view = self._make_view()
         interaction = _make_interaction()
         mixed_btn = next(
@@ -236,7 +235,7 @@ class TestQuickResinSelectView:
 
     @pytest.mark.asyncio
     async def test_confirm_with_resin_sends_single_modal(self):
-        from bot.commands.quick_quote import QuickResinSelectView, QuickQuoteModal
+        from bot.commands.quick_quote import QuickQuoteModal
         view = self._make_view()
         view._selected_resin = ResinType.RPG
         view._colored = False
@@ -523,21 +522,21 @@ class TestQuickQuoteActionView:
         view, _ = _make_quick_action_view(tmp_path)
         buttons = [b for b in view.children if isinstance(b, discord.ui.Button)]
         labels = [b.label for b in buttons]
-        assert any("折扣" in (l or "") for l in labels)
+        assert any("折扣" in (lbl or "") for lbl in labels)
 
     @pytest.mark.asyncio
     async def test_has_shipping_button(self, tmp_path):
         view, _ = _make_quick_action_view(tmp_path)
         buttons = [b for b in view.children if isinstance(b, discord.ui.Button)]
         labels = [b.label for b in buttons]
-        assert any("運送" in (l or "") or "運費" in (l or "") for l in labels)
+        assert any("運送" in (lbl or "") or "運費" in (lbl or "") for lbl in labels)
 
     @pytest.mark.asyncio
     async def test_has_confirm_button(self, tmp_path):
         view, _ = _make_quick_action_view(tmp_path)
         buttons = [b for b in view.children if isinstance(b, discord.ui.Button)]
         labels = [b.label for b in buttons]
-        assert any("確認" in (l or "") for l in labels)
+        assert any("確認" in (lbl or "") for lbl in labels)
 
     @pytest.mark.asyncio
     async def test_compute_final_total_no_adjustments(self, tmp_path):

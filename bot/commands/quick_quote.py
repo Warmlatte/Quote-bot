@@ -17,7 +17,6 @@ from bot.pricing.engine import (
     DiscountInput,
     ResinType,
     apply_auto_discounts,
-    apply_manual_discount,
     calculate_material_cost,
     calculate_processing_fee,
     calculate_quote,
