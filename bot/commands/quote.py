@@ -56,8 +56,8 @@ class _ModalData:
 
 def _format_error_line(err: ModelLoadError) -> str:
     if err.kind == "too_small":
-        return f"⚠️ {err.filename} — {err.detail}"
-    return f"❌ {err.filename} — {err.detail}"
+        return f"⚠️ `{err.filename}` — {err.detail}"
+    return f"❌ `{err.filename}` — {err.detail}"
 
 
 def _format_file_details(file_details: list[dict]) -> str:
@@ -132,7 +132,7 @@ def _build_quote_embed(
     embed.add_field(name="**最終總價**", value=f"**${final_total}**", inline=True)
 
     warning_lines = [
-        f"⚠️ {f['filename']} — {f['warning']}"
+        f"⚠️ `{f['filename']}` — {f['warning']}"
         for f in file_details
         if f.get("warning")
     ]

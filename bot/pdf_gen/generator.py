@@ -23,14 +23,34 @@ _ASSETS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "assets",
 )
-# reportlab TTFont 只支援 TrueType outlines（TTF/TTC），不支援 CFF/OTF。
-# 依優先順序嘗試字型，全部失敗時拋出 FileNotFoundError。
-_FONT_PATHS: list[tuple[str, int]] = [
-    (os.path.join(_ASSETS_DIR, "NotoSansCJK-Regular.ttc"), 0),
-    ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
-    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
-    ("/usr/share/fonts/truetype/noto/NotoSansCJKtc-Regular.ttf", 0),
-]
+
+
+def _build_font_paths() -> list[tuple[str, int]]:
+    import glob
+
+    # reportlab TTFont 只支援 TrueType outlines（TTF/TTC），不支援 CFF/OTF。
+    static: list[tuple[str, int]] = [
+        (os.path.join(_ASSETS_DIR, "NotoSansCJK-Regular.ttc"), 0),
+        ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
+    ]
+    # 動態掃描 Linux 系統字型目錄，覆蓋各 Debian/Ubuntu 版本的安裝路徑差異
+    linux_globs = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK*.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK*.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK*.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK*.ttf",
+        "/usr/share/fonts/noto-cjk/*.ttc",
+        "/usr/share/fonts/noto-cjk/*.ttf",
+    ]
+    dynamic: list[tuple[str, int]] = [
+        (p, 0)
+        for pattern in linux_globs
+        for p in sorted(glob.glob(pattern))
+    ]
+    return static + dynamic
+
+
+_FONT_PATHS = _build_font_paths()
 _FONT_NAME = "NotoSansCJK"
 _FONT_NAME_BOLD = "NotoSansCJK"  # updated to "NotoSansCJK-Bold" if bold registration succeeds
 _LOGO_PATH = os.path.join(_ASSETS_DIR, "TRB_LOGO.png")
